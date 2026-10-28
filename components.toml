@@ -1,0 +1,9 @@
+# Topcoat UI install state. Managed by `topcoat ui`.
+version = 1
+components_dir = "src/components"
+
+[theme]
+name = "neutral"
+registry = "topcoat"
+hash = "sha256:5e370e648fef95d78c8b048d99be7f7d79fd82132f8c9cc1ce854d3b73024137"
+file = "styles.css"
