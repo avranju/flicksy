@@ -1,7 +1,7 @@
 use crate::{config::LlmConfig, store::Project};
 use rig::{
     AgentBuilder,
-    providers::openai::OpenAIConfig,
+    providers::openai::{OpenAIConfig, wire::Auth},
     tool::{Tool, ToolContext},
 };
 use serde::{Deserialize, Serialize};
@@ -125,11 +125,12 @@ impl Renderer {
         project: &Project,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let render_dir = create_render_dir(path).await?;
-        let key = tokio::fs::read_to_string(&self.config.api_key_file).await?;
+        let key = self.config.api_key().await?;
         let http = rig::rig_reqwest::reqwest::Client::builder()
             .timeout(Duration::from_secs(self.config.request_timeout_seconds))
             .build()?;
-        let model = OpenAIConfig::new(key.trim().to_owned())
+        let model = OpenAIConfig::new(key.unwrap_or_default())
+            .with_auth(Auth::OptionalBearer)
             .with_base_url(&self.config.base_url)
             .connect(rig::http_client::DynHttpClient::new(
                 rig::rig_reqwest::ReqwestClient::from(http),
@@ -260,7 +261,8 @@ mod tests {
         let config = LlmConfig {
             base_url: String::new(),
             model: String::new(),
-            api_key_file: PathBuf::new(),
+            api_key_file: None,
+            api_key_env: None,
             request_timeout_seconds: 1,
         };
         let renderer = Renderer::new(config, store);
