@@ -1,0 +1,14 @@
+# Mount persistent storage at this path and make it writable by UID 10001.
+projects_dir = "/var/lib/flicksy/projects"
+
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[llm]
+# Override this configuration for your inference endpoint and credentials.
+base_url = "http://rust-arch:6284/v1"
+model = "openai/gpt-6.1-terra"
+# api_key_env = "FLICKSY_API_KEY"
+# api_key_file = "/run/secrets/flicksy_api_key"
+request_timeout_seconds = 120

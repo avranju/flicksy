@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+.aws
+target
+projects
+config.toml
+.env
+.env.*
