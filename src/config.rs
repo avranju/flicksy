@@ -8,8 +8,26 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub projects_dir: PathBuf,
+    #[serde(default)]
+    pub server: ServerConfig,
     #[allow(dead_code)]
     pub llm: LlmConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".into(),
+            port: 3000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +121,17 @@ mod tests {
         llm.api_key_env = Some("FLICKSY_TEST_NONEXISTENT_KEY_8D17F".into());
         assert!(llm.api_key().await.is_err());
         tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
+    fn server_defaults_and_configured_values_are_parsed() {
+        let defaults: ServerConfig = toml::from_str("").unwrap();
+        assert_eq!(defaults.host, "127.0.0.1");
+        assert_eq!(defaults.port, 3000);
+        let configured: ServerConfig = toml::from_str("host = '0.0.0.0'\nport = 8080").unwrap();
+        assert_eq!(configured.host, "0.0.0.0");
+        assert_eq!(configured.port, 8080);
+        assert!(toml::from_str::<ServerConfig>("port = 70000").is_err());
     }
 
     #[test]

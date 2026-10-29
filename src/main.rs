@@ -32,9 +32,12 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = config::Config::load(&Args::parse().config)?;
+    let listener =
+        tokio::net::TcpListener::bind((config.server.host.as_str(), config.server.port)).await?;
     let store = Arc::new(store::Store::open(config.projects_dir)?);
     let renderer = renderer::Renderer::new(config.llm, store.clone());
-    Ok(topcoat::start(
+    Ok(topcoat::serve(
+        listener,
         module_router!()
             .discover()
             .app_context(store)

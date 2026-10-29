@@ -1,6 +1,10 @@
 # Relative paths are resolved relative to this configuration file.
 projects_dir = "projects"
 
+[server]
+host = "127.0.0.1"
+port = 3000
+
 [llm]
 base_url = "http://rust-arch:6284/v1"
 model = "openai/gpt-6.1-terra"
