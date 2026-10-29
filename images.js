@@ -17,7 +17,7 @@
 
   function addFiles(files) {
     const incoming = Array.from(files);
-    const valid = incoming.filter(supported);
+    const valid = incoming.filter(file => supported(file) && file.size > 0);
     for (const file of valid) {
       const url = URL.createObjectURL(file);
       const item = document.createElement('li');
@@ -61,7 +61,7 @@
     }
     syncInput();
     status.textContent = valid.length === incoming.length ? '' :
-      'Only JPG, PNG, and WebP files can be added.';
+      'Only non-empty JPG, PNG, and WebP files can be added.';
   }
   window.addEventListener('pagehide', event => {
     if (!event.persisted) selected.forEach(entry => URL.revokeObjectURL(entry.url));

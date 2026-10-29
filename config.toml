@@ -1,0 +1,2 @@
+# Relative paths are resolved relative to this configuration file.
+projects_dir = "projects"

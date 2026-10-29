@@ -12,9 +12,9 @@
   };
   input.addEventListener('change', () => {
     const file = input.files[0];
-    if (file && !supported(file)) {
+    if (file && (!supported(file) || file.size === 0)) {
       input.value = '';
-      status.textContent = 'Choose an audio or video file.';
+      status.textContent = 'Choose a non-empty audio or video file.';
     } else {
       status.textContent = '';
     }
@@ -34,8 +34,8 @@
     e.preventDefault();
     zone.classList.remove('song-dragging');
     const files = e.dataTransfer?.files;
-    if (!files || files.length !== 1 || !supported(files[0])) {
-      status.textContent = 'Drop one audio or video file.';
+    if (!files || files.length !== 1 || (!supported(files[0]) || files[0].size === 0)) {
+      status.textContent = 'Drop one non-empty audio or video file.';
       return;
     }
     input.files = files;
