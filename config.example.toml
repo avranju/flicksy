@@ -11,5 +11,5 @@ model = "openai/gpt-6.1-terra"
 # Optional: set api_key_env to the name of an environment variable. It takes
 # precedence over api_key_file when both are configured. Omit both for no auth.
 # api_key_env = "FLICKSY_API_KEY"
-api_key_file = "/var/run/secrets/classifier_api_key"
+# api_key_file = "/var/run/secrets/classifier_api_key"
 request_timeout_seconds = 120
