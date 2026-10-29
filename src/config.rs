@@ -8,6 +8,17 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub projects_dir: PathBuf,
+    #[allow(dead_code)]
+    pub llm: LlmConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LlmConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_file: PathBuf,
+    pub request_timeout_seconds: u64,
 }
 
 impl Config {
@@ -26,6 +37,12 @@ impl Config {
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join(config.projects_dir);
+        }
+        if config.llm.api_key_file.is_relative() {
+            config.llm.api_key_file = path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(config.llm.api_key_file);
         }
         Ok(config)
     }

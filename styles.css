@@ -235,3 +235,13 @@
 .credits-panel-remove:hover { background: #ece9ff; color: #6554e8; }
 .credits-panel-remove:active { transform: scale(.95); }
 .credits-panel-remove:focus-visible { outline: 2px solid #6554e8; outline-offset: 2px; }
+
+.production-progress { height: 12px; overflow: hidden; border-radius: 999px; background: #e8e6f6; }
+.production-progress[hidden] { display: none; }
+.production-progress span { display: block; width: 38%; height: 100%; border-radius: inherit; background: #6554e8; animation: production-progress 1.5s ease-in-out infinite alternate; }
+@keyframes production-progress { from { transform: translateX(0); } to { transform: translateX(164%); } }
+@media (prefers-reduced-motion: reduce) { .production-progress span { animation: none; width: 100%; opacity: .6; } }
+.production-step-icon { display: grid; width: 29px; height: 29px; flex: none; place-items: center; border-radius: 50%; }
+.production-step-complete { background: #e8f7ef; color: #269a70; }
+.production-step-active { background: #f2f0ff; color: #6554e8; }
+.production-step-failed { background: #fff0f1; color: #a12c44; }

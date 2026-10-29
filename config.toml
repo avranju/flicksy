@@ -1,2 +1,8 @@
 # Relative paths are resolved relative to this configuration file.
 projects_dir = "projects"
+
+[llm]
+base_url = "http://rust-arch:6284/v1"
+model = "openai/gpt-6.1-terra"
+api_key_file = "/var/run/secrets/classifier_api_key"
+request_timeout_seconds = 120

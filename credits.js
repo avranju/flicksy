@@ -3,7 +3,7 @@
   const add = document.getElementById('add-credits-panel');
   if (!panels || !add) return;
 
-  let nextId = 2;
+  let nextId = panels.children.length + 1;
   function updatePanels() {
     const items = [...panels.children];
     items.forEach((panel, index) => {
@@ -14,6 +14,7 @@
     });
   }
 
+  updatePanels();
   add.addEventListener('click', () => {
     const panel = panels.firstElementChild.cloneNode(true);
     const input = panel.querySelector('textarea');

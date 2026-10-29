@@ -6,7 +6,17 @@
   if (!input || !zone || !list || !status) return;
 
   let selected = [];
-  let nextNumber = 1;
+  const saved = [...list.querySelectorAll('[data-saved-number]')];
+  let nextNumber = Math.max(Number(list.dataset.imageHighWater) || 0, ...saved.map(item => Number(item.dataset.savedNumber))) + 1;
+  function updateRequired() { input.required = !list.querySelector('[data-saved-number]'); }
+  for (const item of saved) {
+    item.querySelector('button').addEventListener('click', () => {
+      const next = item.nextElementSibling?.querySelector('button') || item.previousElementSibling?.querySelector('button') || input;
+      item.remove();
+      updateRequired();
+      next.focus();
+    });
+  }
   const supported = file => /\.(jpe?g|png|webp)$/i.test(file.name);
 
   function syncInput() {

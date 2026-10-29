@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tokio::io::AsyncWriteExt;
 use topcoat::{
     Result,
@@ -7,14 +7,19 @@ use topcoat::{
     context::{Cx, app_context},
     font::fontsource::fontsource_font,
     router::{
-        BodyLimit, RouterBuilderDiscoverExt, Slot, content::multipart::Multipart,
-        error::bad_request, layout, module_router, page, route,
+        BodyLimit, RouterBuilderDiscoverExt, Slot,
+        content::{Json, multipart::Multipart},
+        error::bad_request,
+        layout, module_router, page, query_params, route,
     },
     tailwind,
     view::{View, component, view},
 };
 
 mod config;
+mod preview;
+mod production;
+mod renderer;
 mod store;
 pub mod types;
 
@@ -27,11 +32,13 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = config::Config::load(&Args::parse().config)?;
-    let store = store::Store::open(config.projects_dir)?;
+    let store = Arc::new(store::Store::open(config.projects_dir)?);
+    let renderer = renderer::Renderer::new(config.llm, store.clone());
     Ok(topcoat::start(
         module_router!()
             .discover()
             .app_context(store)
+            .app_context(renderer)
             .layer(BodyLimit::max(1024 * 1024 * 1024).at("/create-video"))
             .assets(AssetBundle::load()?)
             .build(),
@@ -55,6 +62,10 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                 <script src=(topcoat::asset::asset!("credits.js")) defer="defer"></script>
                 <script
                     src=(topcoat::asset::asset!("form-validation.js"))
+                    defer="defer"
+                ></script>
+                <script
+                    src=(topcoat::asset::asset!("render-progress.js"))
                     defer="defer"
                 ></script>
                 topcoat::dev::script()
@@ -85,30 +96,119 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
     })
 }
 
+#[query_params(error = bad_request)]
+struct HomeQuery {
+    id: Option<String>,
+}
+
 #[page]
-async fn home() -> Result<impl View> {
-    let renders: Vec<store::Render> = Vec::new();
+async fn home(cx: &Cx) -> Result<impl View> {
+    let query = query_params::<HomeQuery>(cx)?;
+    let project = if let Some(id) = &query.id {
+        Some(
+            app_context::<Arc<store::Store>>(cx)
+                .load_project(id)
+                .await
+                .map_err(|_| bad_request("Project not found"))?,
+        )
+    } else {
+        None
+    };
+    let title = project
+        .as_ref()
+        .map(|p| p.title.clone())
+        .unwrap_or_default();
+    let instructions = project
+        .as_ref()
+        .map(|p| p.instructions.clone())
+        .unwrap_or_default();
+    let credits = project
+        .as_ref()
+        .map(|p| p.credits.clone())
+        .unwrap_or_default();
+    let song_name = project
+        .as_ref()
+        .and_then(|p| p.song.as_ref())
+        .map(|a| a.original_name.clone());
+    let images = project
+        .as_ref()
+        .map(|p| {
+            p.images
+                .iter()
+                .map(|image| (image.number, image.asset.original_name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let image_high_water = project
+        .as_ref()
+        .map(|p| {
+            p.image_number_high_water
+                .max(p.images.iter().map(|i| i.number).max().unwrap_or(0))
+        })
+        .unwrap_or(0);
+    let renders = project.map(|project| project.renders).unwrap_or_default();
     Ok(view! {
         <div class="min-h-screen pb-12">
             <main class="mx-auto flex w-full max-w-[824px] flex-col gap-8 px-6 pt-8">
                 page_intro()
-                video_form()
-                previous_renders(renders: renders)
+                video_form(
+                    title: title,
+                    instructions: instructions,
+                    credits: credits,
+                    song_name: song_name,
+                    images: images,
+                    project_id: query.id.clone(),
+                    image_high_water: image_high_water
+                )
+                previous_renders(
+                    renders: renders,
+                    project_id: query.id.clone().unwrap_or_default()
+                )
             </main>
         </div>
     })
 }
 
 #[route(POST "./create-video")]
-async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<String> {
-    let store = app_context::<store::Store>(cx);
+async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_json::Value>> {
+    let store = app_context::<Arc<store::Store>>(cx);
+    let query = query_params::<HomeQuery>(cx)?;
+    let old = match &query.id {
+        Some(id) => Some(
+            store
+                .load_project(id)
+                .await
+                .map_err(|_| bad_request("Project not found"))?,
+        ),
+        None => None,
+    };
+    if let Some(id) = &query.id {
+        if app_context::<renderer::Renderer>(cx)
+            .status(id)
+            .is_some_and(|p| p.state == "running")
+        {
+            return Err(bad_request("A render is already running").into());
+        }
+    }
     let pending = store.begin()?;
+    let mut retained_numbers = Vec::new();
     let mut project = store::Project::default();
     let mut images = Vec::new();
     let mut image_numbers = Vec::new();
     while let Some(mut field) = multipart.next_field().await? {
         let name = field.name().unwrap_or("").to_owned();
         match name.as_str() {
+            "retained-image" => {
+                let number: u64 = field
+                    .text()
+                    .await?
+                    .parse()
+                    .map_err(|_| bad_request("Invalid image number"))?;
+                if retained_numbers.contains(&number) {
+                    return Err(bad_request("Duplicate image number").into());
+                }
+                retained_numbers.push(number);
+            }
             "song-title" => project.title = field.text().await?,
             "instructions" => project.instructions = field.text().await?,
             "credits-panel" => project.credits.push(field.text().await?),
@@ -159,6 +259,11 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<String> {
                     return Err(bad_request("Uploaded files must not be empty").into());
                 }
                 output.flush().await?;
+                let path = if old.is_some() {
+                    format!("uploads/{}/{path}", pending.id)
+                } else {
+                    path
+                };
                 let asset = store::Asset {
                     original_name: filename,
                     path,
@@ -176,21 +281,108 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<String> {
         return Err(bad_request("Song title is required").into());
     }
     if project.song.is_none() {
+        project.song = old.as_ref().and_then(|p| p.song.clone());
+    }
+    let retained: Vec<store::Image> = retained_numbers
+        .iter()
+        .map(|number| {
+            old.as_ref()
+                .and_then(|p| p.images.iter().find(|i| i.number == *number))
+                .cloned()
+                .ok_or_else(|| bad_request("Unknown saved image"))
+        })
+        .collect::<std::result::Result<_, _>>()?;
+    if image_numbers.iter().any(|n| retained_numbers.contains(n)) {
+        return Err(bad_request("Image numbers must be unique").into());
+    }
+    if project.song.is_none() {
         return Err(bad_request("Song file is required").into());
     }
-    if images.is_empty() {
+    if images.is_empty() && retained.is_empty() {
         return Err(bad_request("At least one image is required").into());
     }
+    let high_water = old
+        .as_ref()
+        .map(|p| {
+            p.image_number_high_water
+                .max(p.images.iter().map(|i| i.number).max().unwrap_or(0))
+        })
+        .unwrap_or(0);
+    if old.is_some() && image_numbers.iter().any(|number| *number <= high_water) {
+        return Err(bad_request("New image numbers must increase").into());
+    }
+    project.image_number_high_water = image_numbers
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(high_water);
     if images.len() != image_numbers.len() {
         return Err(bad_request("Image files and image numbers must match").into());
     }
-    project.images = image_numbers
-        .into_iter()
-        .zip(images)
-        .map(|(number, asset)| store::Image { number, asset })
-        .collect();
-    let id = store.commit(pending, &project).await?;
-    Ok(format!("Project {id} saved."))
+    project.images = retained;
+    project.images.extend(
+        image_numbers
+            .into_iter()
+            .zip(images)
+            .map(|(number, asset)| store::Image { number, asset }),
+    );
+    let id = if let Some(id) = &query.id {
+        store.update_project(id, pending, &mut project).await?;
+        id.clone()
+    } else {
+        store.commit(pending, &project).await?
+    };
+    app_context::<renderer::Renderer>(cx).start(id.clone(), store.project_path(&id), project);
+    Ok(Json(serde_json::json!({"id": id})))
+}
+
+#[route(GET "./render-status")]
+async fn render_status(cx: &Cx) -> Result<Json<renderer::Progress>> {
+    let query = query_params::<production::RenderQuery>(cx)?;
+    let status = app_context::<renderer::Renderer>(cx)
+        .status(&query.id)
+        .ok_or_else(|| bad_request("Unknown or interrupted render"))?;
+    Ok(Json(status))
+}
+
+#[derive(serde::Deserialize)]
+struct RetryRequest {
+    id: String,
+}
+
+#[route(POST "./cancel-render")]
+async fn cancel_render(
+    cx: &Cx,
+    Json(request): Json<RetryRequest>,
+) -> Result<Json<renderer::Progress>> {
+    let renderer = app_context::<renderer::Renderer>(cx);
+    if !renderer.cancel(&request.id) {
+        return Err(bad_request("No active render to cancel").into());
+    }
+    Ok(Json(
+        renderer.status(&request.id).expect("cancelled job exists"),
+    ))
+}
+
+#[route(POST "./retry-render")]
+async fn retry_render(
+    cx: &Cx,
+    Json(request): Json<RetryRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let store = app_context::<Arc<store::Store>>(cx);
+    let project = store
+        .load_project(&request.id)
+        .await
+        .map_err(|_| bad_request("Project not found"))?;
+    if !app_context::<renderer::Renderer>(cx).start(
+        request.id.clone(),
+        store.project_path(&request.id),
+        project,
+    ) {
+        return Err(bad_request("A render is already running").into());
+    }
+    Ok(Json(serde_json::json!({"id": request.id})))
 }
 
 #[component]
@@ -212,27 +404,50 @@ async fn page_intro() -> Result<impl View> {
 }
 
 #[component]
-async fn video_form() -> Result<impl View> {
+async fn video_form(
+    title: String,
+    instructions: String,
+    credits: Vec<String>,
+    song_name: Option<String>,
+    images: Vec<(u64, String)>,
+    project_id: Option<String>,
+    image_high_water: u64,
+) -> Result<impl View> {
+    let action = project_id
+        .clone()
+        .map(|id| format!("/create-video?id={id}"))
+        .unwrap_or_else(|| "/create-video".to_owned());
     Ok(view! {
         <form
+            id="video-form"
             method="post"
-            action="/create-video"
+            action=(action)
             enctype="multipart/form-data"
             class="flex min-w-0 flex-col gap-6 rounded-[20px] bg-white px-5 py-9 sm:px-10"
             aria-label="Create a video"
         >
-            song_title_field()
-            song_file_field()
-            images_field()
-            opening_credits_field()
-            instructions_field()
+            song_title_field(title: title)
+            song_file_field(song_name: song_name)
+            images_field(
+                images: images,
+                project_id: project_id.unwrap_or_default(),
+                image_high_water: image_high_water
+            )
+            opening_credits_field(credits: credits)
+            instructions_field(instructions: instructions)
             create_video_button()
+            <div
+                id="submission-status"
+                role="status"
+                aria-live="polite"
+                class="text-sm text-[#6b7488]"
+            ></div>
         </form>
     })
 }
 
 #[component]
-async fn previous_renders(renders: Vec<store::Render>) -> Result<impl View> {
+async fn previous_renders(renders: Vec<store::Render>, project_id: String) -> Result<impl View> {
     Ok(view! {
         if !renders.is_empty() {
             <section
@@ -264,20 +479,29 @@ async fn previous_renders(renders: Vec<store::Render>) -> Result<impl View> {
                                 </div>
                             </div>
                             <div class="flex shrink-0 items-center gap-3">
-                                <button
-                                    type="button"
+                                <a
+                                    href=(format!(
+                                        "/preview?id={}&render={}",
+                                        project_id,
+                                        render.number,
+                                    ))
                                     aria-label=(format!("Preview render {}", render.number))
                                     class="flex h-9 w-[102px] items-center justify-center rounded-lg bg-[#f2f0ff] text-[13px] font-semibold text-[#6554e8] cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#e5e1ff] active:bg-[#d9d3ff]"
                                 >
                                     "Preview"
-                                </button>
-                                <button
-                                    type="button"
+                                </a>
+                                <a
+                                    href=(format!(
+                                        "/preview/video?id={}&render={}",
+                                        project_id,
+                                        render.number,
+                                    ))
+                                    download="download"
                                     aria-label=(format!("Download render {}", render.number))
                                     class="flex h-9 w-[139px] items-center justify-center rounded-lg border border-[#dde2ec] bg-white text-[13px] font-semibold cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:border-[#bcb4f5] hover:bg-[#f7f6ff] active:bg-[#ece9ff]"
                                 >
                                     "↓ Download"
-                                </button>
+                                </a>
                             </div>
                         </article>
                     }
@@ -288,7 +512,7 @@ async fn previous_renders(renders: Vec<store::Render>) -> Result<impl View> {
 }
 
 #[component]
-async fn song_title_field() -> Result<impl View> {
+async fn song_title_field(title: String) -> Result<impl View> {
     Ok(view! {
         <div class="flex min-w-0 flex-col gap-3">
             <label for="song-title" class="text-[15px] font-semibold">
@@ -297,6 +521,7 @@ async fn song_title_field() -> Result<impl View> {
             <input
                 id="song-title"
                 name="song-title"
+                value=(title)
                 type="text"
                 required="required"
                 placeholder="e.g. A New Beginning"
@@ -307,7 +532,7 @@ async fn song_title_field() -> Result<impl View> {
 }
 
 #[component]
-async fn song_file_field() -> Result<impl View> {
+async fn song_file_field(song_name: Option<String>) -> Result<impl View> {
     Ok(view! {
         <div class="flex min-w-0 flex-col gap-3">
             <h2 class="text-[15px] font-semibold">"Song file"</h2>
@@ -320,7 +545,7 @@ async fn song_file_field() -> Result<impl View> {
                     id="song-file"
                     name="song-file"
                     type="file"
-                    required="required"
+                    required=(song_name.is_none())
                     accept="audio/*,video/*"
                     class="sr-only"
                     aria-describedby="song-file-hint song-file-status"
@@ -333,7 +558,7 @@ async fn song_file_field() -> Result<impl View> {
                 </span>
                 <span class="flex min-w-0 flex-1 flex-col gap-2">
                     <span id="song-file-name" class="break-all text-base font-semibold">
-                        "Choose an audio or video file"
+                        (song_name.as_deref().unwrap_or("Choose an audio or video file"))
                     </span>
                     <span id="song-file-hint" class="text-[13px] text-[#6b7488]">
                         "or drag and drop · audio or video"
@@ -354,7 +579,11 @@ async fn song_file_field() -> Result<impl View> {
 }
 
 #[component]
-async fn images_field() -> Result<impl View> {
+async fn images_field(
+    images: Vec<(u64, String)>,
+    project_id: String,
+    image_high_water: u64,
+) -> Result<impl View> {
     Ok(view! {
         <div class="flex min-w-0 flex-col gap-3">
             <h2 class="text-[15px] font-semibold">"Photos and images"</h2>
@@ -368,7 +597,7 @@ async fn images_field() -> Result<impl View> {
                     name="images"
                     type="file"
                     accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                    required="required"
+                    required=(images.is_empty())
                     multiple="multiple"
                     class="sr-only"
                     aria-describedby="images-hint images-status"
@@ -397,16 +626,45 @@ async fn images_field() -> Result<impl View> {
             ></p>
             <ul
                 id="images-list"
+                data-image-high-water=(image_high_water)
                 class="image-grid"
                 aria-label="Selected images"
                 aria-live="polite"
-            ></ul>
+            >
+                for (number, name) in images {
+                    <li class="image-tile" data-saved-number=(number)>
+                        <img
+                            src=(format!(
+                                "/preview/image?id={}&number={}",
+                                project_id,
+                                number,
+                            ))
+                            alt=""
+                        >
+                        <span class="image-tile-number">
+                            (format!("Image {number}"))
+                        </span>
+                        <span class="image-tile-name">(name.as_str())</span>
+                        <button
+                            type="button"
+                            class="image-tile-remove"
+                            aria-label=(format!("Remove {name}"))
+                        >
+                            "×"
+                        </button>
+                        <input type="hidden" name="retained-image" value=(number)>
+                    </li>
+                }
+            </ul>
         </div>
     })
 }
 
 #[component]
-async fn opening_credits_field() -> Result<impl View> {
+async fn opening_credits_field(mut credits: Vec<String>) -> Result<impl View> {
+    if credits.is_empty() {
+        credits.push(String::new());
+    }
     Ok(view! {
         <div class="flex min-w-0 flex-col gap-3">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -417,30 +675,36 @@ async fn opening_credits_field() -> Result<impl View> {
                 "Each panel becomes a separate opening screen. Leave blank to skip credits."
             </p>
             <div id="credits-panels" class="flex min-w-0 flex-col gap-3">
-                <div
-                    class="credits-panel flex min-w-0 flex-col gap-[9px] rounded-[10px] bg-[#f7f6ff] p-4"
-                >
-                    <div class="credits-panel-heading">
-                        <label for="credits-panel-1" class="text-[13px] font-semibold">
-                            "Panel 1"
-                        </label>
-                        <button
-                            type="button"
-                            class="credits-panel-remove"
-                            aria-label="Remove panel 1"
-                            hidden="hidden"
+                for (index, text) in credits.into_iter().enumerate() {
+                    <div
+                        class="credits-panel flex min-w-0 flex-col gap-[9px] rounded-[10px] bg-[#f7f6ff] p-4"
+                    >
+                        <div class="credits-panel-heading">
+                            <label
+                                for=(format!("credits-panel-{}", index + 1))
+                                class="text-[13px] font-semibold"
+                            >
+                                (format!("Panel {}", index + 1))
+                            </label>
+                            <button
+                                type="button"
+                                class="credits-panel-remove"
+                                aria-label=(format!("Remove panel {}", index + 1))
+                            >
+                                "×"
+                            </button>
+                        </div>
+                        <textarea
+                            id=(format!("credits-panel-{}", index + 1))
+                            name="credits-panel"
+                            rows="3"
+                            placeholder="Type the text to appear on this screen…"
+                            class="min-h-[105px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white p-4 text-sm placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
                         >
-                            "×"
-                        </button>
+                            (text)
+                        </textarea>
                     </div>
-                    <textarea
-                        id="credits-panel-1"
-                        name="credits-panel"
-                        rows="3"
-                        placeholder="Type the text to appear on this screen…"
-                        class="min-h-[105px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white p-4 text-sm placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
-                    ></textarea>
-                </div>
+                }
             </div>
             <button
                 id="add-credits-panel"
@@ -454,7 +718,7 @@ async fn opening_credits_field() -> Result<impl View> {
 }
 
 #[component]
-async fn instructions_field() -> Result<impl View> {
+async fn instructions_field(instructions: String) -> Result<impl View> {
     Ok(view! {
         <div class="flex min-w-0 flex-col gap-3">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -469,7 +733,9 @@ async fn instructions_field() -> Result<impl View> {
                 rows="3"
                 placeholder="Describe the mood, opening credits, image order, transitions…"
                 class="min-h-[104px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white p-4 text-sm placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
-            ></textarea>
+            >
+                (instructions)
+            </textarea>
         </div>
     })
 }

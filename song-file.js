@@ -7,8 +7,9 @@
 
   const supported = file => /^(audio|video)\//i.test(file.type) ||
     /\.(mp3|wav|m4a|aac|flac|ogg|opus|aiff|aif|mp4|m4v|mov|webm|mkv|avi|mpeg|mpg)$/i.test(file.name);
+  const savedName = name.textContent.trim();
   const show = () => {
-    name.textContent = input.files[0]?.name || 'Choose an audio or video file';
+    name.textContent = input.files[0]?.name || savedName;
   };
   input.addEventListener('change', () => {
     const file = input.files[0];
