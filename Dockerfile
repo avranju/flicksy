@@ -13,7 +13,7 @@ FROM debian:trixie-slim AS runtime
 
 # FFmpeg includes ffprobe; the agent also uses a shell and standard tools.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates ffmpeg fontconfig fonts-dejavu-core jq python3 \
+    bash ca-certificates ffmpeg fontconfig fonts-dejavu-core imagemagick jq python3 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 flicksy \
     && useradd --uid 10001 --gid flicksy --home-dir /var/lib/flicksy --create-home --shell /bin/bash flicksy \

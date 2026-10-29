@@ -1,5 +1,7 @@
 # Running Flicksy in Docker
 
+The runtime image includes FFmpeg, FFprobe, ImageMagick, Python, jq, and a shell.
+
 Build the image from the project root:
 
 ```sh
