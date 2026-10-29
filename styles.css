@@ -146,3 +146,92 @@
     @apply bg-background font-sans text-foreground;
   }
 }
+
+.song-dragging {
+  border-color: #6554e8;
+  background-color: #f2f0ff;
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+  padding: 0;
+  list-style: none;
+}
+.image-tile {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dde2ec;
+  border-radius: 10px;
+  background: #fafbff;
+}
+.image-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+.image-tile-error::before {
+  content: "Preview unavailable";
+  display: grid;
+  aspect-ratio: 1;
+  place-items: center;
+  color: #6b7488;
+  font-size: 12px;
+}
+.image-tile-name {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 8px;
+  color: #6b7488;
+  font-size: 12px;
+}
+.image-tile-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+  color: #19213a;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 5px #0003;
+}
+.image-tile-remove:hover { background: #ece9ff; }
+.image-tile-remove:active { transform: scale(.95); }
+.image-tile-remove:focus-visible { outline: 2px solid #6554e8; outline-offset: 2px; }
+
+.image-tile-number {
+  display: block;
+  padding: 8px 8px 0;
+  color: #19213a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.credits-panel-heading { display: flex; align-items: center; justify-content: space-between; }
+.credits-panel-remove {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7488;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.credits-panel-remove[hidden] { display: none; }
+.credits-panel-remove:hover { background: #ece9ff; color: #6554e8; }
+.credits-panel-remove:active { transform: scale(.95); }
+.credits-panel-remove:focus-visible { outline: 2px solid #6554e8; outline-offset: 2px; }
