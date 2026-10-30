@@ -13,7 +13,7 @@ FROM archlinux:base AS runtime
 
 # FFmpeg includes ffprobe; the agent also uses a shell and standard tools.
 RUN pacman -Syu --noconfirm --needed \
-    bash ca-certificates ffmpeg fontconfig ttf-dejavu imagemagick jq python \
+    bash ca-certificates ffmpeg fontconfig ttf-dejavu noto-fonts imagemagick jq python \
     && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/* \
     && groupadd --gid 10001 flicksy \
     && useradd --uid 10001 --gid flicksy --home-dir /var/lib/flicksy --create-home --shell /bin/bash flicksy \
