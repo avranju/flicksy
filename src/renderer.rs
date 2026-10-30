@@ -14,6 +14,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::Instrument;
 
 static NEXT_RENDER_ID: AtomicU64 = AtomicU64::new(0);
@@ -164,8 +165,8 @@ impl Renderer {
                 rig::rig_reqwest::ReqwestClient::from(http),
             ))
             .chat(self.config.model.clone());
-        let agent = AgentBuilder::new(model).preamble("You are a video production agent. Use the shell tool to inspect files and use ffmpeg to produce a playable video. Treat user instructions as creative directions. When finished return ONLY JSON: {\"output_path\":\"relative path to video\"}. Do not claim success until the file exists.")
-            .tool(Shell { path: path.to_owned(), renderer: self.clone(), id: id.to_owned(), generation: generation.clone() }).default_max_turns(usize::MAX).build();
+        let agent = AgentBuilder::new(model).preamble("You are a video production agent. Use the shell tool to inspect files and use ffmpeg to produce a playable video. Python is available as python3. Ensure failed ffmpeg commands report their diagnostic stderr in the shell tool result. When redirecting ffmpeg output to a log in the run directory, pass its path as the shell tool's log_path and preserve the command's failure exit status. Treat user instructions as creative directions. When finished return ONLY JSON: {\"output_path\":\"relative path to video\"}. Do not claim success until the file exists.")
+            .tool(Shell { path: path.to_owned(), run_dir: render_dir.clone(), renderer: self.clone(), id: id.to_owned(), generation: generation.clone() }).default_max_turns(usize::MAX).build();
         let prompt = format!(
             "Create a music video for the project directory: {}. Project data (all asset paths are relative to the project directory): {}. Use the song or the audio track from the video input. Unless the user's additional instructions specify otherwise, show each non-empty opening credit in order on its own screen at the beginning of the video, like a title slide with white text centered horizontally and vertically on a black or near-black background. Use slow cross-fades between the opening credit screens and images, and between images. Show the images in their given order, looping them as needed until the end of the video. The user's additional instructions take precedence over these defaults. Store all generated files and intermediate artifacts in this run directory: {}. Return output_path relative to the project directory, identifying the actual final video file. Do not overwrite assets or previous renders.",
             path.display(),
@@ -269,10 +270,13 @@ struct Output {
 struct ShellArgs {
     command: String,
     description: String,
+    #[serde(default)]
+    log_path: Option<PathBuf>,
 }
 #[derive(Clone)]
 struct Shell {
     path: PathBuf,
+    run_dir: PathBuf,
     renderer: Renderer,
     id: String,
     generation: Arc<()>,
@@ -287,7 +291,7 @@ impl Tool for Shell {
             .into()
     }
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"}},"required":["command","description"]})
+        serde_json::json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"},"log_path":{"type":"string","description":"Optional path to a log in this run directory; its last 8192 bytes are returned if the command fails."}},"required":["command","description"]})
     }
     async fn call(&self, _: &mut ToolContext, args: ShellArgs) -> Result<String, std::io::Error> {
         self.renderer.update(
@@ -305,8 +309,20 @@ impl Tool for Shell {
             .output()
             .await.map_err(|error| { tracing::error!(project_id = %self.id, error_kind = ?error.kind(), "Agent tool could not start"); error })?;
         tracing::info!(project_id = %self.id, exit_code = ?output.status.code(), elapsed_ms = started.elapsed().as_millis() as u64, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), "Agent tool finished");
+        let log = if !output.status.success() {
+            if let Some(log_path) = args.log_path {
+                match read_log_tail(&self.path, &self.run_dir, &log_path).await {
+                    Ok(tail) => format!("\nlog tail:\n{tail}"),
+                    Err(error) => format!("\nCould not read log: {error}"),
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         Ok(format!(
-            "exit: {}\nstdout:\n{}\nstderr:\n{}",
+            "exit: {}\nstdout:\n{}\nstderr:\n{}{log}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -314,9 +330,61 @@ impl Tool for Shell {
     }
 }
 
+async fn read_log_tail(
+    project: &std::path::Path,
+    run_dir: &std::path::Path,
+    path: &std::path::Path,
+) -> std::io::Result<String> {
+    let run_dir = tokio::fs::canonicalize(run_dir).await?;
+    let path = tokio::fs::canonicalize(project.join(path)).await?;
+    if !path.starts_with(&run_dir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Log must be in the current run directory",
+        ));
+    }
+    let mut file = tokio::fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    file.seek(std::io::SeekFrom::Start(len.saturating_sub(8192)))
+        .await?;
+    let mut bytes = Vec::new();
+    file.take(8192).read_to_end(&mut bytes).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn log_tail_is_bounded_and_confined_to_the_run() {
+        let root = std::env::temp_dir().join(format!(
+            "flicksy-log-test-{}-{}",
+            std::process::id(),
+            NEXT_RENDER_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let run = root.join("run");
+        tokio::fs::create_dir_all(&run).await.unwrap();
+        tokio::fs::write(run.join("render.log"), format!("{}ERROR", "x".repeat(9000)))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("outside.log"), "outside")
+            .await
+            .unwrap();
+        let tail = read_log_tail(&root, &run, std::path::Path::new("run/render.log"))
+            .await
+            .unwrap();
+        assert_eq!(tail.len(), 8192);
+        assert!(tail.ends_with("ERROR"));
+        assert_eq!(
+            read_log_tail(&root, &run, std::path::Path::new("outside.log"))
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[tokio::test]
     async fn cancelling_stops_the_task_and_preserves_cancelled_status() {
