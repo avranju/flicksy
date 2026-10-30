@@ -33,3 +33,11 @@ The agent runs shell commands with the container user's privileges. Run only in
 a trusted environment; the container does not isolate individual render runs.
 Use one server process per project volume. Cancelling a render stops the agent
 loop, but a command already launched by it may continue running.
+
+The server writes structured tracing events to stderr. By default Flicksy logs
+its own events at `info`. Set `[tracing] level = "debug"` in the configuration
+for more detail. `RUST_LOG`, when set to a valid filter, overrides this setting;
+for example, add `-e RUST_LOG=flicksy=debug` to `docker run`. Render-status polling
+is suppressed at the default level. Prompts, credentials, shell commands, and
+command output are not logged by Flicksy; enabling third-party trace targets may
+produce additional diagnostics.

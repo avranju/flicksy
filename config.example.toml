@@ -5,6 +5,10 @@ projects_dir = "projects"
 host = "127.0.0.1"
 port = 3000
 
+# Levels: off, error, warn, info, debug, trace.
+[tracing]
+level = "info"
+
 [llm]
 base_url = "http://rust-arch:6284/v1"
 model = "openai/gpt-6.1-terra"

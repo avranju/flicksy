@@ -14,6 +14,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tracing::Instrument;
 
 static NEXT_RENDER_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -61,6 +62,7 @@ impl Renderer {
     pub fn cancel(&self, id: &str) -> bool {
         let mut jobs = self.jobs.lock().unwrap();
         let Some(job) = jobs.get_mut(id) else {
+            tracing::warn!(project_id = id, "Cancellation requested for unknown render");
             return false;
         };
         if job.progress.state != "running" {
@@ -71,6 +73,7 @@ impl Renderer {
             message: "Video production cancelled.".into(),
         };
         job.task.abort();
+        tracing::info!(project_id = id, "Render cancelled");
         true
     }
     pub fn start(&self, id: String, path: PathBuf, project: Project) -> bool {
@@ -79,31 +82,51 @@ impl Renderer {
             .get(&id)
             .is_some_and(|job| job.progress.state == "running")
         {
+            tracing::warn!(project_id = %id, "Render already running");
             return false;
         }
         let renderer = self.clone();
         let run_id = id.clone();
         let generation = Arc::new(());
         let run_generation = generation.clone();
-        let task = tokio::spawn(async move {
-            match renderer
-                .run(&run_id, &run_generation, &path, &project)
-                .await
-            {
-                Ok(()) => renderer.update(
-                    &run_id,
-                    &run_generation,
-                    "succeeded",
-                    "Video production finished",
-                ),
-                Err(error) => renderer.update(
-                    &run_id,
-                    &run_generation,
-                    "failed",
-                    format!("Video production failed: {error}"),
-                ),
+        let run_sequence = NEXT_RENDER_ID.fetch_add(1, Ordering::Relaxed);
+        let span = tracing::info_span!("render_run", project_id = %id, run_sequence);
+        tracing::info!(project_id = %id, "Render started");
+        let task = tokio::spawn(
+            async move {
+                let started = std::time::Instant::now();
+                match renderer
+                    .run(&run_id, &run_generation, &path, &project)
+                    .await
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "Render completed"
+                        );
+                        renderer.update(
+                            &run_id,
+                            &run_generation,
+                            "succeeded",
+                            "Video production finished",
+                        )
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "Render failed; see production status for details"
+                        );
+                        renderer.update(
+                            &run_id,
+                            &run_generation,
+                            "failed",
+                            format!("Video production failed: {error}"),
+                        )
+                    }
+                }
             }
-        });
+            .instrument(span),
+        );
         jobs.insert(
             id,
             Job {
@@ -125,7 +148,12 @@ impl Renderer {
         project: &Project,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let render_dir = create_render_dir(path).await?;
-        let key = self.config.api_key().await?;
+        tracing::info!(run_dir = %render_dir.display(), "Render workspace created");
+        let key = self.config.api_key().await.map_err(|error| {
+            tracing::error!(error_kind = ?error.kind(), "Failed to load LLM credentials");
+            error
+        })?;
+        tracing::info!(model = %self.config.model, authenticated = key.is_some(), timeout_seconds = self.config.request_timeout_seconds, "LLM configured");
         let http = rig::rig_reqwest::reqwest::Client::builder()
             .timeout(Duration::from_secs(self.config.request_timeout_seconds))
             .build()?;
@@ -145,11 +173,38 @@ impl Renderer {
             render_dir.display()
         );
         self.update(id, generation, "running", "Planning video production");
-        let answer = agent.prompt(prompt).await?;
-        let result: Output = serde_json::from_str(answer.output().trim())?;
+        tracing::info!("Agent loop started");
+        let answer = agent.prompt(prompt).await.map_err(|error| {
+            let category = match &error {
+                rig::prelude::PromptError::Provider(_) => "provider",
+                rig::prelude::PromptError::Report(_) => "report",
+                rig::prelude::PromptError::Memory { .. } => "memory",
+                rig::prelude::PromptError::MaxTurns { .. } => "max_turns",
+                rig::prelude::PromptError::Cancelled { .. } => "cancelled",
+                rig::prelude::PromptError::UnknownToolCall { .. } => "unknown_tool",
+                _ => "other",
+            };
+            tracing::error!(category, provider_status = ?error.provider_response_status().map(|s| s.as_u16()), provider_request_id = ?error.provider_request_id(), "Agent loop failed");
+            error
+        })?;
+        tracing::info!("Agent loop finished");
+        let result: Output = serde_json::from_str(answer.output().trim()).map_err(|error| {
+            tracing::error!(
+                line = error.line(),
+                column = error.column(),
+                "Agent result was not valid JSON"
+            );
+            error
+        })?;
         let root = tokio::fs::canonicalize(path).await?;
-        let output = tokio::fs::canonicalize(root.join(&result.output_path)).await?;
+        let output = tokio::fs::canonicalize(root.join(&result.output_path))
+            .await
+            .map_err(|error| {
+                tracing::error!(error_kind = ?error.kind(), "Cannot resolve agent output");
+                error
+            })?;
         if !output.starts_with(&root) || !output.is_file() {
+            tracing::error!("Agent output path is not a project file");
             return Err("The reported video must be a file in the project directory".into());
         }
         self.update(id, generation, "running", "Checking the finished video");
@@ -166,12 +221,17 @@ impl Renderer {
             ])
             .arg(&output)
             .output()
-            .await?;
+            .await
+            .map_err(|error| {
+                tracing::error!(error_kind = ?error.kind(), "Could not run ffprobe");
+                error
+            })?;
         if !probe.status.success()
             || !String::from_utf8_lossy(&probe.stdout)
                 .lines()
                 .any(|line| line.trim() == "video")
         {
+            tracing::error!(exit_code = ?probe.status.code(), stderr_bytes = probe.stderr.len(), "Video verification failed");
             return Err("The reported file has no readable video stream".into());
         }
         let relative = output
@@ -179,6 +239,7 @@ impl Renderer {
             .to_str()
             .ok_or("Output path is not UTF-8")?;
         self.store.record_render(id, relative).await?;
+        tracing::info!(output_path = relative, "Render output recorded");
         Ok(())
     }
 }
@@ -235,12 +296,15 @@ impl Tool for Shell {
             "running",
             args.description.lines().next().unwrap_or("Working"),
         );
+        let started = std::time::Instant::now();
+        tracing::info!(project_id = %self.id, "Agent tool started");
         let output = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(args.command)
             .current_dir(&self.path)
             .output()
-            .await?;
+            .await.map_err(|error| { tracing::error!(project_id = %self.id, error_kind = ?error.kind(), "Agent tool could not start"); error })?;
+        tracing::info!(project_id = %self.id, exit_code = ?output.status.code(), elapsed_ms = started.elapsed().as_millis() as u64, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), "Agent tool finished");
         Ok(format!(
             "exit: {}\nstdout:\n{}\nstderr:\n{}",
             output.status,

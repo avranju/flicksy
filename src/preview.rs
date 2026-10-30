@@ -35,6 +35,7 @@ async fn select(cx: &Cx) -> Result<(String, crate::store::Project, u64)> {
     }
     .ok_or_else(|| bad_request("Render not found"))?
     .number;
+    tracing::debug!(project_id = %query.id, render_number = render, "Render selected");
     Ok((query.id.clone(), project, render))
 }
 
@@ -191,6 +192,7 @@ async fn video_response(
 ) -> Result<Response> {
     let length = file.metadata().await?.len();
     let selection = parse_range(range, length);
+    tracing::debug!(file_bytes = length, range_kind = ?selection, "Serving video");
     let mut response = Response::builder()
         .header("Accept-Ranges", "bytes")
         .header("Content-Type", content_type);

@@ -62,12 +62,17 @@ pub struct PendingProject {
 impl Drop for PendingProject {
     fn drop(&mut self) {
         if !self.committed {
-            let _ = std::fs::remove_dir_all(&self.path);
+            if let Err(error) = std::fs::remove_dir_all(&self.path) {
+                tracing::warn!(project_id = %self.id, error_kind = ?error.kind(), "Failed to clean up pending project");
+            } else {
+                tracing::debug!(project_id = %self.id, "Pending project removed");
+            }
         }
     }
 }
 
 impl Store {
+    #[tracing::instrument(skip_all, fields(root = %root.display()), err)]
     pub fn open(root: PathBuf) -> io::Result<Self> {
         std::fs::create_dir_all(&root)?;
         let root = std::fs::canonicalize(root)?;
@@ -87,6 +92,7 @@ impl Store {
             }
             Err(error) => return Err(error),
         }
+        tracing::info!(root = %root.display(), "Project store ready");
         Ok(Self {
             root,
             lock: Mutex::new(()),
@@ -95,6 +101,7 @@ impl Store {
     pub fn project_path(&self, id: &str) -> PathBuf {
         self.root.join(id)
     }
+    #[tracing::instrument(level = "debug", skip_all, fields(project_id = id), err)]
     pub async fn load_project(&self, id: &str) -> io::Result<Project> {
         let _guard = self.lock.lock().await;
         let index = read_index(&self.root.join("index.json"))?;
@@ -108,6 +115,7 @@ impl Store {
         )?)
         .map_err(io::Error::other)
     }
+    #[tracing::instrument(skip_all, fields(project_id = id), err)]
     pub async fn record_render(&self, id: &str, output: &str) -> io::Result<()> {
         let _guard = self.lock.lock().await;
         let directory = self.root.join(id);
@@ -136,8 +144,10 @@ impl Store {
             let _ = std::fs::remove_file(temp);
             return Err(error);
         }
+        tracing::info!(render_number = number, "Render metadata saved");
         Ok(())
     }
+    #[tracing::instrument(skip_all, fields(project_id = id), err)]
     pub async fn update_project(
         &self,
         id: &str,
@@ -176,8 +186,12 @@ impl Store {
         })();
         let _ = std::fs::remove_file(project_temp);
         let _ = std::fs::remove_file(index_temp);
+        if result.is_ok() {
+            tracing::info!("Project updated");
+        }
         result
     }
+    #[tracing::instrument(level = "debug", skip_all, err)]
     pub fn begin(&self) -> io::Result<PendingProject> {
         loop {
             let now = SystemTime::now()
@@ -203,6 +217,7 @@ impl Store {
             }
         }
     }
+    #[tracing::instrument(skip_all, fields(project_id = %pending.id), err)]
     pub async fn commit(
         &self,
         mut pending: PendingProject,
@@ -225,6 +240,7 @@ impl Store {
             return Err(error);
         }
         pending.committed = true;
+        tracing::info!("Project created");
         Ok(pending.id.clone())
     }
 }

@@ -10,6 +10,8 @@ pub struct Config {
     pub projects_dir: PathBuf,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub tracing: TracingConfig,
     #[allow(dead_code)]
     pub llm: LlmConfig,
 }
@@ -30,6 +32,37 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TracingConfig {
+    pub level: LogLevel,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn filter(&self) -> &'static str {
+        match self {
+            Self::Off => "flicksy=off",
+            Self::Error => "flicksy=error",
+            Self::Warn => "flicksy=warn",
+            Self::Info => "flicksy=info",
+            Self::Debug => "flicksy=debug",
+            Self::Trace => "flicksy=trace",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
@@ -41,6 +74,7 @@ pub struct LlmConfig {
 }
 
 impl Config {
+    #[tracing::instrument(skip_all, fields(config_path = %path.display()), err)]
     pub fn load(path: &Path) -> io::Result<Self> {
         let contents = fs::read_to_string(path)?;
         let mut config: Self = toml::from_str(&contents)
@@ -121,6 +155,15 @@ mod tests {
         llm.api_key_env = Some("FLICKSY_TEST_NONEXISTENT_KEY_8D17F".into());
         assert!(llm.api_key().await.is_err());
         tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
+    fn tracing_level_defaults_and_rejects_invalid_values() {
+        let default: TracingConfig = toml::from_str("").unwrap();
+        assert_eq!(default.level.filter(), "flicksy=info");
+        let debug: TracingConfig = toml::from_str("level = 'debug'").unwrap();
+        assert_eq!(debug.level.filter(), "flicksy=debug");
+        assert!(toml::from_str::<TracingConfig>("level = 'verbose'").is_err());
     }
 
     #[test]

@@ -11,6 +11,7 @@ use topcoat::{
         content::{Json, multipart::Multipart},
         error::bad_request,
         layout, module_router, page, query_params, route,
+        tower::TowerLayer,
     },
     tailwind,
     view::{View, component, view},
@@ -31,9 +32,19 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = config::Config::load(&Args::parse().config)?;
+    let args = Args::parse();
+    let config = config::Config::load(&args.config)?;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| config.tracing.level.filter().into()),
+        )
+        .with_target(true)
+        .init();
+    tracing::info!(config_path = %args.config.display(), "Starting Flicksy");
     let listener =
         tokio::net::TcpListener::bind((config.server.host.as_str(), config.server.port)).await?;
+    tracing::info!(address = %listener.local_addr()?, "Server listening");
     let store = Arc::new(store::Store::open(config.projects_dir)?);
     let renderer = renderer::Renderer::new(config.llm, store.clone());
     Ok(topcoat::serve(
@@ -42,6 +53,22 @@ async fn main() -> Result<()> {
             .discover()
             .app_context(store)
             .app_context(renderer)
+            .layer(TowerLayer::new(tower_http::trace::TraceLayer::new_for_http()
+                .make_span_with(|request: &http::Request<topcoat::router::Body>| {
+                    if request.uri().path() == "/render-status" {
+                        tracing::debug_span!("http_request", method = %request.method(), path = request.uri().path())
+                    } else {
+                        tracing::info_span!("http_request", method = %request.method(), path = request.uri().path())
+                    }
+                })
+                .on_response(|response: &http::Response<_>, latency: std::time::Duration, span: &tracing::Span| {
+                    if span.is_disabled() && !response.status().is_server_error() { return; }
+                    if response.status().is_server_error() {
+                        tracing::error!(status = response.status().as_u16(), elapsed_ms = latency.as_millis() as u64, "Request failed");
+                    } else {
+                        tracing::info!(status = response.status().as_u16(), elapsed_ms = latency.as_millis() as u64, "Request completed");
+                    }
+                })))
             .layer(BodyLimit::max(1024 * 1024 * 1024).at("/create-video"))
             .assets(AssetBundle::load()?)
             .build(),
@@ -193,6 +220,10 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
             return Err(bad_request("A render is already running").into());
         }
     }
+    tracing::info!(
+        project_id = query.id.as_deref().unwrap_or("new"),
+        "Receiving project submission"
+    );
     let pending = store.begin()?;
     let mut retained_numbers = Vec::new();
     let mut project = store::Project::default();
@@ -262,6 +293,7 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
                     return Err(bad_request("Uploaded files must not be empty").into());
                 }
                 output.flush().await?;
+                tracing::info!(asset_type = %name, size_bytes = size, "Upload saved");
                 let path = if old.is_some() {
                     format!("uploads/{}/{path}", pending.id)
                 } else {
@@ -336,6 +368,7 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
     } else {
         store.commit(pending, &project).await?
     };
+    tracing::info!(project_id = %id, image_count = project.images.len(), credit_count = project.credits.len(), "Project saved; starting render");
     app_context::<renderer::Renderer>(cx).start(id.clone(), store.project_path(&id), project);
     Ok(Json(serde_json::json!({"id": id})))
 }
@@ -343,6 +376,7 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
 #[route(GET "./render-status")]
 async fn render_status(cx: &Cx) -> Result<Json<renderer::Progress>> {
     let query = query_params::<production::RenderQuery>(cx)?;
+    tracing::debug!(project_id = %query.id, "Checking render status");
     let status = app_context::<renderer::Renderer>(cx)
         .status(&query.id)
         .ok_or_else(|| bad_request("Unknown or interrupted render"))?;
@@ -360,6 +394,7 @@ async fn cancel_render(
     Json(request): Json<RetryRequest>,
 ) -> Result<Json<renderer::Progress>> {
     let renderer = app_context::<renderer::Renderer>(cx);
+    tracing::info!(project_id = %request.id, "Render cancellation requested");
     if !renderer.cancel(&request.id) {
         return Err(bad_request("No active render to cancel").into());
     }
@@ -374,6 +409,7 @@ async fn retry_render(
     Json(request): Json<RetryRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let store = app_context::<Arc<store::Store>>(cx);
+    tracing::info!(project_id = %request.id, "Render retry requested");
     let project = store
         .load_project(&request.id)
         .await

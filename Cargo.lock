@@ -2375,6 +2375,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "futures-util",
+ "http",
  "http-body",
  "http-body-util",
  "rig",
@@ -2384,6 +2385,9 @@ dependencies = [
  "tokio-util",
  "toml",
  "topcoat",
+ "tower-http 0.6.11",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7389,6 +7393,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 
