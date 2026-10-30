@@ -84,6 +84,7 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
+                <script src=(topcoat::asset::asset!("theme.js"))></script>
                 topcoat::font::link(font: fontsource_font!(GEIST))
                 <link rel="stylesheet" href=(tailwind::stylesheet!())>
                 <title>"Flicksy"</title>
@@ -101,8 +102,8 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                 ></script>
                 topcoat::dev::script()
             </head>
-            <body class="m-0 bg-[#f7f8fc] text-[#19213a]">
-                <header class="bg-white px-6 py-[26px]">
+            <body class="m-0 bg-background text-foreground">
+                <header class="bg-card px-6 py-[26px]">
                     <div
                         class="mx-auto flex w-full max-w-[1192px] flex-wrap items-center gap-3"
                     >
@@ -116,25 +117,33 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                                 "flicksy"
                             </span>
                         </a>
-                        <p class="text-[13px] text-[#6b7488]">
+                        <p class="text-[13px] text-muted-foreground">
                             "Turn songs and photos into videos."
                         </p>
+                        <label class="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+                            <span>"Theme"</span>
+                            <select id="theme-select" class="cursor-pointer rounded-lg border border-border bg-card px-2 py-2 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]" aria-label="Color theme">
+                                <option value="system">"System"</option>
+                                <option value="light">"Light"</option>
+                                <option value="dark">"Dark"</option>
+                            </select>
+                        </label>
                         <button
                             id="projects-button"
                             type="button"
                             aria-haspopup="dialog"
-                            class="ml-auto rounded-xl bg-[#6554e8] px-4 py-2 text-sm font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
+                            class="rounded-xl bg-[#6554e8] px-4 py-2 text-sm font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
                         >
                             "Projects"
                         </button>
                     </div>
                 </header>
-                <dialog id="projects-dialog" aria-labelledby="projects-title" class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-white p-0 text-[#19213a] shadow-xl backdrop:bg-black/50">
-                    <div class="flex items-center justify-between gap-4 bg-[#f7f8fc] px-6 py-4">
+                <dialog id="projects-dialog" aria-labelledby="projects-title" class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-card p-0 text-foreground shadow-xl backdrop:bg-black/50">
+                    <div class="flex items-center justify-between gap-4 bg-background px-6 py-4">
                         <h2 id="projects-title" class="text-xl font-bold">"Projects"</h2>
-                        <button id="projects-close" type="button" aria-label="Close projects" class="cursor-pointer rounded-lg px-2 py-1 text-xl text-[#6b7488] hover:bg-[#f7f8fc] focus-visible:outline-2 focus-visible:outline-[#6554e8]">"×"</button>
+                        <button id="projects-close" type="button" aria-label="Close projects" class="cursor-pointer rounded-lg px-2 py-1 text-xl text-muted-foreground hover:bg-background focus-visible:outline-2 focus-visible:outline-[#6554e8]">"×"</button>
                     </div>
-                    <div id="projects-list" class="max-h-[60vh] overflow-y-auto bg-white px-6 py-2" aria-live="polite"></div>
+                    <div id="projects-list" class="max-h-[60vh] overflow-y-auto bg-card px-6 py-2" aria-live="polite"></div>
                 </dialog>
                 (slot)
             </body>
@@ -451,14 +460,14 @@ async fn retry_render(
 async fn page_intro() -> Result<impl View> {
     Ok(view! {
         <section class="flex flex-col gap-[10px] sm:px-7" aria-labelledby="page-title">
-            <p class="text-xs font-bold text-[#6554e8]">"CREATE A NEW VIDEO"</p>
+            <p class="text-xs font-bold text-accent-ink">"CREATE A NEW VIDEO"</p>
             <h1
                 id="page-title"
                 class="text-[30px] leading-[1.2] font-bold sm:text-[34px]"
             >
                 "Bring your song to life"
             </h1>
-            <p class="text-base text-[#6b7488]">
+            <p class="text-base text-muted-foreground">
                 "Add your music, photos, and a few directions. Flicksy takes it from there."
             </p>
         </section>
@@ -485,7 +494,7 @@ async fn video_form(
             method="post"
             action=(action)
             enctype="multipart/form-data"
-            class="flex min-w-0 flex-col gap-6 rounded-[20px] bg-white px-5 py-9 sm:px-10"
+            class="flex min-w-0 flex-col gap-6 rounded-[20px] bg-card px-5 py-9 sm:px-10"
             aria-label="Create a video"
         >
             song_title_field(title: title)
@@ -502,7 +511,7 @@ async fn video_form(
                 id="submission-status"
                 role="status"
                 aria-live="polite"
-                class="text-sm text-[#6b7488]"
+                class="text-sm text-muted-foreground"
             ></div>
         </form>
     })
@@ -519,10 +528,10 @@ async fn previous_renders(renders: Vec<store::Render>, project_id: String) -> Re
                 <h2 id="renders-title" class="text-[25px] leading-[1.2] font-bold">
                     "Previous renders"
                 </h2>
-                <p class="text-sm text-[#6b7488]">
+                <p class="text-sm text-muted-foreground">
                     "Your earlier versions stay available to preview or download."
                 </p>
-                <div class="flex flex-col divide-y divide-[#dde2ec]">
+                <div class="flex flex-col divide-y divide-border">
                     for render in renders {
                         <article
                             class="flex min-w-0 flex-col gap-3 py-3 sm:flex-row sm:items-center sm:gap-4"
@@ -530,7 +539,7 @@ async fn previous_renders(renders: Vec<store::Render>, project_id: String) -> Re
                         >
                             <div class="flex min-w-0 flex-1 items-center gap-4">
                                 <div
-                                    class="flex h-[53px] w-[74px] shrink-0 items-center justify-center rounded-lg bg-[#e6e9f1] text-[#6b7488]"
+                                    class="flex h-[53px] w-[74px] shrink-0 items-center justify-center rounded-lg bg-surface-raised text-muted-foreground"
                                 >
                                     "▶"
                                 </div>
@@ -548,7 +557,7 @@ async fn previous_renders(renders: Vec<store::Render>, project_id: String) -> Re
                                         render.number,
                                     ))
                                     aria-label=(format!("Preview render {}", render.number))
-                                    class="flex h-9 w-[102px] items-center justify-center rounded-lg bg-[#f2f0ff] text-[13px] font-semibold text-[#6554e8] cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#e5e1ff] active:bg-[#d9d3ff]"
+                                    class="flex h-9 w-[102px] items-center justify-center rounded-lg bg-accent-soft text-[13px] font-semibold text-accent-ink cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-accent-hover active:bg-accent-hover"
                                 >
                                     "Preview"
                                 </a>
@@ -560,7 +569,7 @@ async fn previous_renders(renders: Vec<store::Render>, project_id: String) -> Re
                                     ))
                                     download="download"
                                     aria-label=(format!("Download render {}", render.number))
-                                    class="flex h-9 w-[139px] items-center justify-center rounded-lg border border-[#dde2ec] bg-white text-[13px] font-semibold cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:border-[#bcb4f5] hover:bg-[#f7f6ff] active:bg-[#ece9ff]"
+                                    class="flex h-9 w-[139px] items-center justify-center rounded-lg border border-border bg-card text-[13px] font-semibold cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:border-accent-border hover:bg-accent-soft active:bg-accent-hover"
                                 >
                                     "↓ Download"
                                 </a>
@@ -587,7 +596,7 @@ async fn song_title_field(title: String) -> Result<impl View> {
                 type="text"
                 required="required"
                 placeholder="e.g. A New Beginning"
-                class="h-[54px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white px-4 text-[15px] placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
+                class="h-[54px] w-full min-w-0 rounded-[11px] border border-border bg-card px-4 text-[15px] placeholder:text-placeholder focus:outline-2 focus:outline-[#6554e8]"
             >
         </div>
     })
@@ -601,7 +610,7 @@ async fn song_file_field(song_name: Option<String>) -> Result<impl View> {
             <label
                 id="song-dropzone"
                 for="song-file"
-                class="flex min-w-0 cursor-pointer items-center gap-5 rounded-xl border border-[#dde2ec] bg-[#fafbff] px-[19px] py-6 transition hover:border-[#6554e8] hover:bg-[#f2f0ff] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#6554e8] motion-reduce:transition-none"
+                class="flex min-w-0 cursor-pointer items-center gap-5 rounded-xl border border-border bg-surface px-[19px] py-6 transition hover:border-[#6554e8] hover:bg-accent-soft focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#6554e8] motion-reduce:transition-none"
             >
                 <input
                     id="song-file"
@@ -613,7 +622,7 @@ async fn song_file_field(song_name: Option<String>) -> Result<impl View> {
                     aria-describedby="song-file-hint song-file-status"
                 >
                 <span
-                    class="flex size-[58px] shrink-0 items-center justify-center rounded-xl bg-[#f2f0ff] text-3xl text-[#6554e8]"
+                    class="flex size-[58px] shrink-0 items-center justify-center rounded-xl bg-accent-soft text-3xl text-accent-ink"
                     aria-hidden="true"
                 >
                     "♫"
@@ -622,15 +631,15 @@ async fn song_file_field(song_name: Option<String>) -> Result<impl View> {
                     <span id="song-file-name" class="break-all text-base font-semibold">
                         (song_name.as_deref().unwrap_or("Choose an audio or video file"))
                     </span>
-                    <span id="song-file-hint" class="text-[13px] text-[#6b7488]">
+                    <span id="song-file-hint" class="text-[13px] text-muted-foreground">
                         "or drag and drop · audio or video"
                     </span>
-                    <span class="text-xs text-[#6b7488]">
+                    <span class="text-xs text-muted-foreground">
                         "For video files, only the audio track will be used."
                     </span>
                     <span
                         id="song-file-status"
-                        class="text-[13px] text-[#a12c44]"
+                        class="text-[13px] text-danger-ink"
                         role="status"
                         aria-live="polite"
                     ></span>
@@ -652,7 +661,7 @@ async fn images_field(
             <label
                 id="images-dropzone"
                 for="images"
-                class="flex min-w-0 cursor-pointer items-center gap-5 rounded-xl border border-[#dde2ec] bg-[#fafbff] px-[19px] py-6 transition hover:border-[#6554e8] hover:bg-[#f2f0ff] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#6554e8] motion-reduce:transition-none"
+                class="flex min-w-0 cursor-pointer items-center gap-5 rounded-xl border border-border bg-surface px-[19px] py-6 transition hover:border-[#6554e8] hover:bg-accent-soft focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[#6554e8] motion-reduce:transition-none"
             >
                 <input
                     id="images"
@@ -665,24 +674,24 @@ async fn images_field(
                     aria-describedby="images-hint images-status"
                 >
                 <span
-                    class="flex size-[58px] shrink-0 items-center justify-center rounded-xl bg-[#f2f0ff] text-3xl text-[#6554e8]"
+                    class="flex size-[58px] shrink-0 items-center justify-center rounded-xl bg-accent-soft text-3xl text-accent-ink"
                     aria-hidden="true"
                 >
                     "▧"
                 </span>
                 <span class="flex min-w-0 flex-1 flex-col gap-2">
                     <span class="text-base font-semibold">"Choose images"</span>
-                    <span id="images-hint" class="text-[13px] text-[#6b7488]">
+                    <span id="images-hint" class="text-[13px] text-muted-foreground">
                         "or drag and drop · JPG, PNG, WebP"
                     </span>
-                    <span class="text-xs text-[#6b7488]">
+                    <span class="text-xs text-muted-foreground">
                         "Add as many images as you like"
                     </span>
                 </span>
             </label>
             <p
                 id="images-status"
-                class="text-[13px] text-[#a12c44]"
+                class="text-[13px] text-danger-ink"
                 role="status"
                 aria-live="polite"
             ></p>
@@ -731,15 +740,15 @@ async fn opening_credits_field(mut credits: Vec<String>) -> Result<impl View> {
         <div class="flex min-w-0 flex-col gap-3">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <h2 class="text-[15px] font-semibold">"Opening credits"</h2>
-                <span class="text-xs text-[#6b7488]">"Optional"</span>
+                <span class="text-xs text-muted-foreground">"Optional"</span>
             </div>
-            <p class="text-[13px] text-[#6b7488]">
+            <p class="text-[13px] text-muted-foreground">
                 "Each panel becomes a separate opening screen. Leave blank to skip credits."
             </p>
             <div id="credits-panels" class="flex min-w-0 flex-col gap-3">
                 for (index, text) in credits.into_iter().enumerate() {
                     <div
-                        class="credits-panel flex min-w-0 flex-col gap-[9px] rounded-[10px] bg-[#f7f6ff] p-4"
+                        class="credits-panel flex min-w-0 flex-col gap-[9px] rounded-[10px] bg-accent-soft p-4"
                     >
                         <div class="credits-panel-heading">
                             <label
@@ -761,7 +770,7 @@ async fn opening_credits_field(mut credits: Vec<String>) -> Result<impl View> {
                             name="credits-panel"
                             rows="3"
                             placeholder="Type the text to appear on this screen…"
-                            class="min-h-[105px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white p-4 text-sm placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
+                            class="min-h-[105px] w-full min-w-0 rounded-[11px] border border-border bg-card p-4 text-sm placeholder:text-placeholder focus:outline-2 focus:outline-[#6554e8]"
                         >
                             (text)
                         </textarea>
@@ -771,7 +780,7 @@ async fn opening_credits_field(mut credits: Vec<String>) -> Result<impl View> {
             <button
                 id="add-credits-panel"
                 type="button"
-                class="min-h-[43px] w-full rounded-[10px] border border-[#d9d3ff] bg-[#f7f6ff] px-4 py-3 text-sm font-semibold text-[#6554e8] cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#ece9ff] active:bg-[#e1dcff]"
+                class="min-h-[43px] w-full rounded-[10px] border border-accent-border bg-accent-soft px-4 py-3 text-sm font-semibold text-accent-ink cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-accent-hover active:bg-accent-hover"
             >
                 "+ Add another panel"
             </button>
@@ -787,14 +796,14 @@ async fn instructions_field(instructions: String) -> Result<impl View> {
                 <label for="instructions" class="text-[15px] font-semibold">
                     "Additional instructions"
                 </label>
-                <span class="text-xs text-[#6b7488]">"Optional"</span>
+                <span class="text-xs text-muted-foreground">"Optional"</span>
             </div>
             <textarea
                 id="instructions"
                 name="instructions"
                 rows="3"
                 placeholder="Describe the mood, opening credits, image order, transitions…"
-                class="min-h-[104px] w-full min-w-0 rounded-[11px] border border-[#dde2ec] bg-white p-4 text-sm placeholder:text-[#949baa] focus:outline-2 focus:outline-[#6554e8]"
+                class="min-h-[104px] w-full min-w-0 rounded-[11px] border border-border bg-card p-4 text-sm placeholder:text-placeholder focus:outline-2 focus:outline-[#6554e8]"
             >
                 (instructions)
             </textarea>
