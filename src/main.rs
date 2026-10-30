@@ -90,6 +90,7 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                 <script src=(topcoat::asset::asset!("song-file.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("images.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("credits.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("projects.js")) defer="defer"></script>
                 <script
                     src=(topcoat::asset::asset!("form-validation.js"))
                     defer="defer"
@@ -105,7 +106,7 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                     <div
                         class="mx-auto flex w-full max-w-[1192px] flex-wrap items-center gap-3"
                     >
-                        <div class="flex shrink-0 items-center gap-3">
+                        <a href="/" aria-label="Flicksy - new project" class="flex shrink-0 items-center gap-3 no-underline text-inherit">
                             <div
                                 class="flex size-9 items-center justify-center rounded-[11px] bg-[#6554e8] text-[23px] font-bold text-white"
                             >
@@ -114,16 +115,38 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                             <span class="text-[26px] leading-[1.2] font-bold">
                                 "flicksy"
                             </span>
-                        </div>
+                        </a>
                         <p class="text-[13px] text-[#6b7488]">
                             "Turn songs and photos into videos."
                         </p>
+                        <button
+                            id="projects-button"
+                            type="button"
+                            aria-haspopup="dialog"
+                            class="ml-auto rounded-xl bg-[#6554e8] px-4 py-2 text-sm font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
+                        >
+                            "Projects"
+                        </button>
                     </div>
                 </header>
+                <dialog id="projects-dialog" aria-labelledby="projects-title" class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-white p-0 text-[#19213a] shadow-xl backdrop:bg-black/50">
+                    <div class="flex items-center justify-between gap-4 bg-[#f7f8fc] px-6 py-4">
+                        <h2 id="projects-title" class="text-xl font-bold">"Projects"</h2>
+                        <button id="projects-close" type="button" aria-label="Close projects" class="cursor-pointer rounded-lg px-2 py-1 text-xl text-[#6b7488] hover:bg-[#f7f8fc] focus-visible:outline-2 focus-visible:outline-[#6554e8]">"×"</button>
+                    </div>
+                    <div id="projects-list" class="max-h-[60vh] overflow-y-auto bg-white px-6 py-2" aria-live="polite"></div>
+                </dialog>
                 (slot)
             </body>
         </html>
     })
+}
+
+#[route(GET "./projects")]
+async fn projects(cx: &Cx) -> Result<Json<Vec<store::ProjectSummary>>> {
+    Ok(Json(
+        app_context::<Arc<store::Store>>(cx).list_projects().await?,
+    ))
 }
 
 #[query_params(error = bad_request)]

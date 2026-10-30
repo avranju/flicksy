@@ -19,6 +19,11 @@ pub struct IndexEntry {
     pub title: String,
     pub path: String,
 }
+#[derive(Debug, Serialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub title: String,
+}
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Project {
     pub title: String,
@@ -100,6 +105,18 @@ impl Store {
     }
     pub fn project_path(&self, id: &str) -> PathBuf {
         self.root.join(id)
+    }
+    pub async fn list_projects(&self) -> io::Result<Vec<ProjectSummary>> {
+        let _guard = self.lock.lock().await;
+        Ok(read_index(&self.root.join("index.json"))?
+            .projects
+            .into_iter()
+            .filter(|entry| entry.id == entry.path)
+            .map(|entry| ProjectSummary {
+                id: entry.id,
+                title: entry.title,
+            })
+            .collect())
     }
     #[tracing::instrument(level = "debug", skip_all, fields(project_id = id), err)]
     pub async fn load_project(&self, id: &str) -> io::Result<Project> {
@@ -279,6 +296,7 @@ mod tests {
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ));
         let store = Store::open(root.clone()).unwrap();
+        assert!(store.list_projects().await.unwrap().is_empty());
         let initial = Project {
             title: "Old".into(),
             ..Default::default()
@@ -303,6 +321,10 @@ mod tests {
             ..Default::default()
         };
         store.update_project(&id, pending, &mut edit).await.unwrap();
+        let projects = store.list_projects().await.unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, id);
+        assert_eq!(projects[0].title, "New");
         let loaded = store.load_project(&id).await.unwrap();
         assert_eq!(loaded.title, "New");
         assert_eq!(loaded.renders[0].path, "renders/first.mp4");

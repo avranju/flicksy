@@ -45,6 +45,20 @@
    file is installed at the project root, so `./src` is the crate's source. */
 @source "./src/**/*.rs";
 
+.project-link {
+  display: block;
+  padding: 0.75rem;
+  color: #19213a;
+  overflow-wrap: anywhere;
+}
+.project-link + .project-link {
+  border-top: 1px solid #e8eaf1;
+}
+.project-link:hover, .project-link:focus-visible {
+  background: #f7f8fc;
+  outline-color: #6554e8;
+}
+
 /* Dark mode is opted into by putting the `dark` class on an ancestor,
    typically <html>. */
 @custom-variant dark (&:is(.dark *));
