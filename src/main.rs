@@ -46,6 +46,8 @@ enum Command {
 enum UsersCommand {
     /// Add a user (password is prompted without echo).
     Add { username: String },
+    /// Reset a user's password without requiring the old password.
+    ResetPassword { username: String },
     /// List users.
     List,
     /// Remove a user and revoke their sessions.
@@ -71,6 +73,11 @@ async fn main() -> Result<()> {
                 let password = read_password()?;
                 accounts.add(&username, &password)?;
                 println!("Added user: {username}");
+            }
+            UsersCommand::ResetPassword { username } => {
+                let password = read_password()?;
+                accounts.reset_password(&username, &password)?;
+                println!("Password reset for user: {username}");
             }
             UsersCommand::List => {
                 for username in accounts.list()? {

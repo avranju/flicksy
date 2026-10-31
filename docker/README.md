@@ -54,7 +54,8 @@ docker run --rm -it \
   flicksy --config /etc/flicksy/config.toml users add alice
 ```
 
-Use `users list` to list accounts and `users remove alice` to remove one and
+Use `users reset-password alice` to set a new password and revoke its sessions,
+`users list` to list accounts and `users remove alice` to remove one and
 revoke its sessions. The password prompt does not echo input. Locally, use
 `cargo run -- --config config.toml users add alice` (and the corresponding
 `list` or `remove` command). The authentication database defaults to

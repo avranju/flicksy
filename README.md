@@ -9,11 +9,13 @@ Create an account before opening the app:
 
 ```sh
 cargo run -- --config config.toml users add alice
+cargo run -- --config config.toml users reset-password alice
 cargo run -- --config config.toml users list
 cargo run -- --config config.toml users remove alice
 ```
 
-The add command prompts for a password without echoing it. Removing an account
+The add and reset-password commands prompt for a password without echoing it.
+Resetting a password revokes that user’s sessions. Removing an account
 also revokes its sessions. An account that owns projects cannot be removed.
 Commands can run while the server is running.
 

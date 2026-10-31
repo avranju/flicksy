@@ -59,6 +59,36 @@ impl Accounts {
             .map_err(db_error)?;
         Ok(())
     }
+    pub fn reset_password(&self, username: &str, password: &str) -> io::Result<()> {
+        if !valid(username, password) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Username must be nonblank and at most 128 bytes; password must be 1–1024 bytes",
+            ));
+        }
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
+            .map_err(db_error)?
+            .to_string();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let updated = transaction
+            .execute(
+                "UPDATE users SET password_hash = ?1 WHERE username = ?2",
+                params![hash, username],
+            )
+            .map_err(db_error)?;
+        if updated == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "User does not exist",
+            ));
+        }
+        transaction
+            .execute("DELETE FROM sessions WHERE username = ?1", [username])
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)
+    }
     pub fn list(&self) -> io::Result<Vec<String>> {
         let c = self.connect()?;
         let mut statement = c
@@ -157,6 +187,41 @@ fn fingerprint(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn password_reset_replaces_credentials_and_revokes_only_that_users_sessions() {
+        let path = std::env::temp_dir().join(format!(
+            "flicksy-password-reset-{}-{}.sqlite",
+            std::process::id(),
+            URL_SAFE_NO_PAD.encode(generate_salt())
+        ));
+        let accounts = Accounts::open(&path, false).unwrap();
+        accounts.add("alice", "old password").unwrap();
+        accounts.add("bob", "bob password").unwrap();
+        let alice_session = accounts.login("alice", "old password").unwrap().unwrap();
+        let bob_session = accounts.login("bob", "bob password").unwrap().unwrap();
+        accounts.reset_password("alice", "new password").unwrap();
+        assert!(accounts.session(&alice_session).unwrap().is_none());
+        assert_eq!(
+            accounts.session(&bob_session).unwrap().as_deref(),
+            Some("bob")
+        );
+        assert!(accounts.login("alice", "old password").unwrap().is_none());
+        assert!(accounts.login("alice", "new password").unwrap().is_some());
+        assert_eq!(
+            accounts
+                .reset_password("missing", "password")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            accounts.reset_password("alice", "").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(accounts.login("alice", "new password").unwrap().is_some());
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn accounts_and_sessions_survive_reopen_and_are_revoked() {
         let path = std::env::temp_dir().join(format!(
