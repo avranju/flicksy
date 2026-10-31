@@ -58,7 +58,10 @@ Use `users list` to list accounts and `users remove alice` to remove one and
 revoke its sessions. The password prompt does not echo input. Locally, use
 `cargo run -- --config config.toml users add alice` (and the corresponding
 `list` or `remove` command). The authentication database defaults to
-`flicksy.sqlite` inside `projects_dir`; back it up with that directory.
+`flicksy.sqlite` inside `projects_dir`; it also stores project records. Back up
+the database and project directory together with the server stopped. Legacy
+projects require the separate ownership migration described in the main README;
+they are not imported automatically at startup.
 Set `[auth] secure_cookie = true` when accessing Flicksy over HTTPS. Sessions
 have no server-side expiry; browsers may discard cookies after long inactivity
 or when their storage is cleared.

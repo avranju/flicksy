@@ -1,7 +1,7 @@
 # Relative paths are resolved relative to this configuration file.
 projects_dir = "projects"
 
-# Accounts and persistent sessions default to projects_dir/flicksy.sqlite.
+# Accounts, persistent sessions, and projects default to projects_dir/flicksy.sqlite.
 # Set secure_cookie = true when serving through HTTPS.
 [auth]
 # database = "projects/flicksy.sqlite"

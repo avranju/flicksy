@@ -16,7 +16,7 @@ pub(crate) struct RenderQuery {
 async fn production(cx: &Cx) -> Result<impl View> {
     let query = query_params::<RenderQuery>(cx)?;
     let project = app_context::<Arc<store::Store>>(cx)
-        .load_project(&query.id)
+        .load_project(crate::auth::username(cx), &query.id)
         .await
         .map_err(|_| bad_request("Project not found"))?;
     Ok(view! {

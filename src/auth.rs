@@ -59,6 +59,10 @@ use topcoat::{
 
 pub struct SignedInUser(pub String);
 
+pub fn username(cx: &Cx) -> &str {
+    &topcoat::context::request_context::<SignedInUser>(cx).0
+}
+
 const COOKIE: &str = "flicksy_session";
 const MAX_AGE: u64 = 400 * 24 * 60 * 60;
 

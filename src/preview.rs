@@ -23,7 +23,7 @@ struct PreviewQuery {
 async fn select(cx: &Cx) -> Result<(String, crate::store::Project, u64)> {
     let query = query_params::<PreviewQuery>(cx)?;
     let project = app_context::<Arc<Store>>(cx)
-        .load_project(&query.id)
+        .load_project(crate::auth::username(cx), &query.id)
         .await
         .map_err(|_| bad_request("Project not found"))?;
     let render = match query.render {
@@ -230,7 +230,7 @@ async fn image(cx: &Cx) -> Result<Response> {
     let query = query_params::<ImageQuery>(cx)?;
     let store = app_context::<Arc<Store>>(cx);
     let project = store
-        .load_project(&query.id)
+        .load_project(crate::auth::username(cx), &query.id)
         .await
         .map_err(|_| bad_request("Project not found"))?;
     let image = project

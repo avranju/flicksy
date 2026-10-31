@@ -93,10 +93,10 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
     tracing::info!(config_path = %args.config.display(), "Starting Flicksy");
+    let store = Arc::new(store::Store::open(config.projects_dir, db_path)?);
     let listener =
         tokio::net::TcpListener::bind((config.server.host.as_str(), config.server.port)).await?;
     tracing::info!(address = %listener.local_addr()?, "Server listening");
-    let store = Arc::new(store::Store::open(config.projects_dir)?);
     let renderer = renderer::Renderer::new(config.llm, store.clone());
     Ok(topcoat::serve(
         listener,
@@ -225,7 +225,9 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
 #[route(GET "./projects")]
 async fn projects(cx: &Cx) -> Result<Json<Vec<store::ProjectSummary>>> {
     Ok(Json(
-        app_context::<Arc<store::Store>>(cx).list_projects().await?,
+        app_context::<Arc<store::Store>>(cx)
+            .list_projects(auth::username(cx))
+            .await?,
     ))
 }
 
@@ -240,7 +242,7 @@ async fn home(cx: &Cx) -> Result<impl View> {
     let project = if let Some(id) = &query.id {
         Some(
             app_context::<Arc<store::Store>>(cx)
-                .load_project(id)
+                .load_project(auth::username(cx), id)
                 .await
                 .map_err(|_| bad_request("Project not found"))?,
         )
@@ -309,7 +311,7 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
     let old = match &query.id {
         Some(id) => Some(
             store
-                .load_project(id)
+                .load_project(auth::username(cx), id)
                 .await
                 .map_err(|_| bad_request("Project not found"))?,
         ),
@@ -466,19 +468,30 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
             .map(|(number, asset)| store::Image { number, asset }),
     );
     let id = if let Some(id) = &query.id {
-        store.update_project(id, pending, &mut project).await?;
+        store
+            .update_project(auth::username(cx), id, pending, &mut project)
+            .await?;
         id.clone()
     } else {
-        store.commit(pending, &project).await?
+        store.commit(pending, auth::username(cx), &project).await?
     };
     tracing::info!(project_id = %id, image_count = project.images.len(), credit_count = project.credits.len(), "Project saved; starting render");
-    app_context::<renderer::Renderer>(cx).start(id.clone(), store.project_path(&id), project);
+    app_context::<renderer::Renderer>(cx).start(
+        id.clone(),
+        auth::username(cx).to_owned(),
+        store.project_path(&id),
+        project,
+    );
     Ok(Json(serde_json::json!({"id": id})))
 }
 
 #[route(GET "./render-status")]
 async fn render_status(cx: &Cx) -> Result<Json<renderer::Progress>> {
     let query = query_params::<production::RenderQuery>(cx)?;
+    app_context::<Arc<store::Store>>(cx)
+        .load_project(auth::username(cx), &query.id)
+        .await
+        .map_err(|_| bad_request("Project not found"))?;
     tracing::debug!(project_id = %query.id, "Checking render status");
     let status = app_context::<renderer::Renderer>(cx)
         .status(&query.id)
@@ -496,6 +509,10 @@ async fn cancel_render(
     cx: &Cx,
     Json(request): Json<RetryRequest>,
 ) -> Result<Json<renderer::Progress>> {
+    app_context::<Arc<store::Store>>(cx)
+        .load_project(auth::username(cx), &request.id)
+        .await
+        .map_err(|_| bad_request("Project not found"))?;
     let renderer = app_context::<renderer::Renderer>(cx);
     tracing::info!(project_id = %request.id, "Render cancellation requested");
     if !renderer.cancel(&request.id) {
@@ -514,11 +531,12 @@ async fn retry_render(
     let store = app_context::<Arc<store::Store>>(cx);
     tracing::info!(project_id = %request.id, "Render retry requested");
     let project = store
-        .load_project(&request.id)
+        .load_project(auth::username(cx), &request.id)
         .await
         .map_err(|_| bad_request("Project not found"))?;
     if !app_context::<renderer::Renderer>(cx).start(
         request.id.clone(),
+        auth::username(cx).to_owned(),
         store.project_path(&request.id),
         project,
     ) {

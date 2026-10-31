@@ -77,7 +77,7 @@ impl Renderer {
         tracing::info!(project_id = id, "Render cancelled");
         true
     }
-    pub fn start(&self, id: String, path: PathBuf, project: Project) -> bool {
+    pub fn start(&self, id: String, username: String, path: PathBuf, project: Project) -> bool {
         let mut jobs = self.jobs.lock().unwrap();
         if jobs
             .get(&id)
@@ -97,7 +97,7 @@ impl Renderer {
             async move {
                 let started = std::time::Instant::now();
                 match renderer
-                    .run(&run_id, &run_generation, &path, &project)
+                    .run(&run_id, &username, &run_generation, &path, &project)
                     .await
                 {
                     Ok(()) => {
@@ -144,6 +144,7 @@ impl Renderer {
     async fn run(
         &self,
         id: &str,
+        username: &str,
         generation: &Arc<()>,
         path: &std::path::Path,
         project: &Project,
@@ -239,7 +240,7 @@ impl Renderer {
             .strip_prefix(&root)?
             .to_str()
             .ok_or("Output path is not UTF-8")?;
-        self.store.record_render(id, relative).await?;
+        self.store.record_render(username, id, relative).await?;
         tracing::info!(output_path = relative, "Render output recorded");
         Ok(())
     }
@@ -389,7 +390,8 @@ mod tests {
     #[tokio::test]
     async fn cancelling_stops_the_task_and_preserves_cancelled_status() {
         let root = std::env::temp_dir().join(format!("flicksy-cancel-test-{}", std::process::id()));
-        let store = Arc::new(crate::store::Store::open(root.clone()).unwrap());
+        let store =
+            Arc::new(crate::store::Store::open(root.clone(), root.join("flicksy.sqlite")).unwrap());
         let config = LlmConfig {
             base_url: String::new(),
             model: String::new(),
