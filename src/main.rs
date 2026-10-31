@@ -84,20 +84,20 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <script src=(topcoat::asset::asset!("theme.js"))></script>
+                <script src=(topcoat::asset::asset!("js/theme.js"))></script>
                 topcoat::font::link(font: fontsource_font!(GEIST))
                 <link rel="stylesheet" href=(tailwind::stylesheet!())>
                 <title>"Flicksy"</title>
-                <script src=(topcoat::asset::asset!("song-file.js")) defer="defer"></script>
-                <script src=(topcoat::asset::asset!("images.js")) defer="defer"></script>
-                <script src=(topcoat::asset::asset!("credits.js")) defer="defer"></script>
-                <script src=(topcoat::asset::asset!("projects.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/song-file.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/images.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/credits.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/projects.js")) defer="defer"></script>
                 <script
-                    src=(topcoat::asset::asset!("form-validation.js"))
+                    src=(topcoat::asset::asset!("js/form-validation.js"))
                     defer="defer"
                 ></script>
                 <script
-                    src=(topcoat::asset::asset!("render-progress.js"))
+                    src=(topcoat::asset::asset!("js/render-progress.js"))
                     defer="defer"
                 ></script>
                 topcoat::dev::script()
