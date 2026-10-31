@@ -2428,6 +2428,7 @@ dependencies = [
 name = "flicksy"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "argon2",
  "base64 0.22.1",
  "clap",
@@ -2435,6 +2436,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "reqwest 0.13.5",
  "rig",
  "rusqlite",
  "serde",
@@ -2447,6 +2449,7 @@ dependencies = [
  "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -5707,6 +5710,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

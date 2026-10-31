@@ -6,6 +6,13 @@ projects_dir = "/var/lib/flicksy/projects"
 # Enable when the application is accessed via HTTPS.
 secure_cookie = false
 
+# Optional YouTube integration; mount both secret files read-only.
+# [youtube]
+# client_id = "YOUR_GOOGLE_CLIENT_ID"
+# client_secret_file = "/run/secrets/youtube_client_secret"
+# encryption_key_file = "/run/secrets/youtube_encryption_key"
+# redirect_uri = "https://example.com/youtube/callback"
+
 [server]
 host = "0.0.0.0"
 port = 3000

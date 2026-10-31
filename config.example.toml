@@ -7,6 +7,15 @@ projects_dir = "projects"
 # database = "projects/flicksy.sqlite"
 secure_cookie = false
 
+# Optional YouTube integration. Create the key with:
+# python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+# Store both files securely outside the repository and backups of the database.
+# [youtube]
+# client_id = "YOUR_GOOGLE_CLIENT_ID"
+# client_secret_file = "/run/secrets/youtube_client_secret"
+# encryption_key_file = "/run/secrets/youtube_encryption_key"
+# redirect_uri = "https://example.com/youtube/callback"
+
 [server]
 host = "127.0.0.1"
 port = 3000

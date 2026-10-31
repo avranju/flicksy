@@ -66,3 +66,31 @@ they are not imported automatically at startup.
 Set `[auth] secure_cookie = true` when accessing Flicksy over HTTPS. Sessions
 have no server-side expiry; browsers may discard cookies after long inactivity
 or when their storage is cleared.
+
+## YouTube uploads
+
+YouTube integration is optional. In Google Cloud, enable the YouTube Data API
+v3, configure the OAuth consent screen, and create a web application OAuth
+client. Register the exact HTTPS callback URL ending in `/youtube/callback`.
+For local development only, an HTTP localhost callback is also supported. Add
+`[youtube]` to the Flicksy configuration using the fields documented in
+`config.example.toml`. The client secret file contains the plain client secret,
+not the Google client JSON document. The encryption key file contains an
+unpadded base64url-encoded 32-byte random key, for example generated with
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
+
+Keep both files outside the repository and image; mount them read-only and make
+sure UID 10001 can read them. Back up the encryption key separately and securely:
+losing or changing it makes existing connections and in-progress sessions
+unrecoverable. Google may require test users, OAuth verification or an API audit;
+confirm the actual channel and visibility behavior for your Cloud project.
+
+Each Flicksy user connects a YouTube channel from a render's upload screen.
+The app requests upload and read-only YouTube scopes, stores encrypted refresh
+tokens and resumable-session URLs in the account database, and displays saved
+video links per render. Uploaded videos may need additional processing on
+YouTube. Use the account menu to disconnect; this removes the stored connection,
+while Google account permissions can be revoked separately. On restart, return
+to the render's upload page to resume an interrupted upload. If a session has
+expired or its result is uncertain, check YouTube Studio before abandoning it
+and starting a new upload to avoid duplicates.

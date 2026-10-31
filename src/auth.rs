@@ -120,6 +120,11 @@ fn cookie(headers: &http::HeaderMap) -> Option<&str> {
     }
     Some(token)
 }
+pub fn session_fingerprint(cx: &Cx) -> Option<String> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+    cookie(headers(cx)).map(|token| URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes())))
+}
 fn set_cookie(response: &mut Response, accounts: &Accounts, value: &str, age: u64) {
     let secure = if accounts.secure_cookie {
         "; Secure"
@@ -171,7 +176,11 @@ impl Layer for AuthLayer {
                     .status(StatusCode::FORBIDDEN)
                     .body(Body::from("A same-origin request is required"))?);
             }
-            if path == "/login" || path.starts_with("/_topcoat/") {
+            if path == "/login"
+                || (matches!(path, "/privacy" | "/terms")
+                    && matches!(*method(cx), Method::GET | Method::HEAD))
+                || path.starts_with("/_topcoat/")
+            {
                 return next.run(cx, body).await;
             }
             let token = cookie(headers(cx));

@@ -44,6 +44,7 @@ async fn preview(cx: &Cx) -> Result<impl View> {
     let (id, project, number) = select(cx).await?;
     let url = format!("/preview/video?id={id}&render={number}");
     let back = format!("/?id={id}");
+    let upload = format!("/youtube?id={id}&render={number}");
     Ok(view! {
         <main class="mx-auto w-full max-w-[1078px] px-6 pt-10 pb-16">
             <section class="sm:px-5">
@@ -77,6 +78,7 @@ async fn preview(cx: &Cx) -> Result<impl View> {
                     "Your browser does not support video playback."
                 </video>
                 <div class="mt-8 flex flex-col gap-4 sm:flex-row">
+                    <a href=(upload) class="flex min-h-14 flex-1 items-center justify-center rounded-xl border border-border bg-card px-4 text-sm font-semibold hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]">"Upload to YouTube"</a>
                     <a
                         href=(back)
                         class="flex min-h-14 flex-1 items-center justify-center rounded-xl border border-border bg-card px-4 text-sm font-semibold hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]"

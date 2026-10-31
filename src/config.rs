@@ -9,6 +9,8 @@ use std::{
 pub struct Config {
     pub projects_dir: PathBuf,
     #[serde(default)]
+    pub youtube: Option<YouTubeConfig>,
+    #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -16,6 +18,15 @@ pub struct Config {
     pub tracing: TracingConfig,
     #[allow(dead_code)]
     pub llm: LlmConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct YouTubeConfig {
+    pub client_id: String,
+    pub client_secret_file: PathBuf,
+    pub encryption_key_file: PathBuf,
+    pub redirect_uri: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -110,6 +121,15 @@ impl Config {
                 *key_file = path.parent().unwrap_or(Path::new(".")).join(&*key_file);
             }
         }
+        if let Some(youtube) = &mut config.youtube {
+            let base = path.parent().unwrap_or(Path::new("."));
+            if youtube.client_secret_file.is_relative() {
+                youtube.client_secret_file = base.join(&youtube.client_secret_file);
+            }
+            if youtube.encryption_key_file.is_relative() {
+                youtube.encryption_key_file = base.join(&youtube.encryption_key_file);
+            }
+        }
         Ok(config)
     }
 }
@@ -199,5 +219,21 @@ mod tests {
         .unwrap();
         assert!(config.api_key_file.is_none());
         assert!(config.api_key_env.is_none());
+    }
+
+    #[test]
+    fn youtube_is_optional_and_its_paths_resolve_against_config() {
+        let root =
+            std::env::temp_dir().join(format!("flicksy-youtube-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        let base = "projects_dir='projects'\n[llm]\nbase_url='http://localhost'\nmodel='test'\nrequest_timeout_seconds=10\n";
+        std::fs::write(&path, base).unwrap();
+        assert!(Config::load(&path).unwrap().youtube.is_none());
+        std::fs::write(&path, format!("{base}\n[youtube]\nclient_id='client'\nclient_secret_file='secrets/client'\nencryption_key_file='secrets/key'\nredirect_uri='http://localhost/youtube/callback'\n")).unwrap();
+        let yt = Config::load(&path).unwrap().youtube.unwrap();
+        assert_eq!(yt.client_secret_file, root.join("secrets/client"));
+        assert_eq!(yt.encryption_key_file, root.join("secrets/key"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

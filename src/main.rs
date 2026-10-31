@@ -21,10 +21,13 @@ mod accounts;
 mod auth;
 mod config;
 mod preview;
+mod privacy;
 mod production;
 mod renderer;
 mod store;
+mod terms;
 pub mod types;
+mod youtube;
 
 #[derive(Parser)]
 struct Args {
@@ -100,7 +103,8 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
     tracing::info!(config_path = %args.config.display(), "Starting Flicksy");
-    let store = Arc::new(store::Store::open(config.projects_dir, db_path)?);
+    let store = Arc::new(store::Store::open(config.projects_dir, db_path.clone())?);
+    let youtube = youtube::YouTube::new(config.youtube.clone(), db_path)?;
     let listener =
         tokio::net::TcpListener::bind((config.server.host.as_str(), config.server.port)).await?;
     tracing::info!(address = %listener.local_addr()?, "Server listening");
@@ -112,6 +116,7 @@ async fn main() -> Result<()> {
             .app_context(auth.clone())
             .app_context(store)
             .app_context(renderer)
+            .app_context(youtube)
             .layer(TowerLayer::new(tower_http::trace::TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<topcoat::router::Body>| {
                     if request.uri().path() == "/render-status" {
@@ -130,6 +135,7 @@ async fn main() -> Result<()> {
                 })))
             .layer(auth)
             .layer(BodyLimit::max(8192).at("/login"))
+            .layer(BodyLimit::max(16384).at("/youtube/upload"))
             .layer(BodyLimit::max(1024 * 1024 * 1024).at("/create-video"))
             .assets(AssetBundle::load()?)
             .build(),
@@ -139,7 +145,10 @@ async fn main() -> Result<()> {
 
 #[layout]
 async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
-    let is_login = topcoat::router::request::uri(cx).path() == "/login";
+    let is_public = matches!(
+        topcoat::router::request::uri(cx).path(),
+        "/login" | "/privacy" | "/terms"
+    );
     let username =
         topcoat::context::try_request_context::<auth::SignedInUser>(cx).map(|user| user.0.clone());
     Ok(view! {
@@ -157,6 +166,7 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                 <script src=(topcoat::asset::asset!("js/credits.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/projects.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/account-menu.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/youtube.js")) defer="defer"></script>
                 <script
                     src=(topcoat::asset::asset!("js/form-validation.js"))
                     defer="defer"
@@ -193,7 +203,7 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                                 <option value="dark">"Dark"</option>
                             </select>
                         </label>
-                        if !is_login {
+                        if !is_public {
                         <button
                             id="projects-button"
                             type="button"
@@ -208,9 +218,12 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                                     <span class="min-w-0 flex-1 truncate">(username)</span>
                                     <span aria-hidden="true">"▾"</span>
                                 </summary>
-                                <form method="post" action="/logout" class="absolute top-full right-0 z-10 mt-2 min-w-[140px] rounded-xl border border-border bg-card p-1 shadow-lg">
+                                <div class="absolute top-full right-0 z-10 mt-2 min-w-[160px] rounded-xl border border-border bg-card p-1 shadow-lg">
+                                    <a href="/youtube/settings" class="block rounded-lg px-3 py-2 text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]">"YouTube settings"</a>
+                                <form method="post" action="/logout">
                                     <button type="submit" class="w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]">"Log out"</button>
                                 </form>
+                                </div>
                             </details>
                         }
                         }
@@ -224,6 +237,11 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                     <div id="projects-list" class="max-h-[60vh] overflow-y-auto bg-card px-6 py-2" aria-live="polite"></div>
                 </dialog>
                 (slot)
+                <footer class="mx-auto max-w-[1192px] px-6 pb-6 text-sm text-muted-foreground">
+                    <a href="/privacy" class="underline hover:text-accent-ink">"Privacy policy"</a>
+                    <span aria-hidden="true">" · "</span>
+                    <a href="/terms" class="underline hover:text-accent-ink">"Terms of service"</a>
+                </footer>
             </body>
         </html>
     })

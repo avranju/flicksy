@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 argon2 = "0.6"
 base64 = "0.22"
+aes-gcm = "0.10"
+url = "2"
+reqwest = { version = "0.13", default-features = false, features = ["form", "query"] }
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
