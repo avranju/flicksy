@@ -41,3 +41,24 @@ for example, add `-e RUST_LOG=flicksy=debug` to `docker run`. Render-status poll
 is suppressed at the default level. Prompts, credentials, shell commands, and
 command output are not logged by Flicksy; enabling third-party trace targets may
 produce additional diagnostics.
+
+## User accounts
+
+Create an account before signing in. Run this command against the same volume
+and configuration as the server (replace the user name):
+
+```sh
+docker run --rm -it \
+  -v flicksy-projects:/var/lib/flicksy/projects \
+  -v "$PWD/flicksy-container.toml:/etc/flicksy/config.toml:ro" \
+  flicksy --config /etc/flicksy/config.toml users add alice
+```
+
+Use `users list` to list accounts and `users remove alice` to remove one and
+revoke its sessions. The password prompt does not echo input. Locally, use
+`cargo run -- --config config.toml users add alice` (and the corresponding
+`list` or `remove` command). The authentication database defaults to
+`flicksy.sqlite` inside `projects_dir`; back it up with that directory.
+Set `[auth] secure_cookie = true` when accessing Flicksy over HTTPS. Sessions
+have no server-side expiry; browsers may discard cookies after long inactivity
+or when their storage is cleared.

@@ -9,11 +9,20 @@ use std::{
 pub struct Config {
     pub projects_dir: PathBuf,
     #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub tracing: TracingConfig,
     #[allow(dead_code)]
     pub llm: LlmConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthConfig {
+    pub database: Option<PathBuf>,
+    pub secure_cookie: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +99,11 @@ impl Config {
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join(config.projects_dir);
+        }
+        if let Some(database) = &mut config.auth.database {
+            if database.is_relative() {
+                *database = path.parent().unwrap_or(Path::new(".")).join(&*database);
+            }
         }
         if let Some(key_file) = &mut config.llm.api_key_file {
             if key_file.is_relative() {

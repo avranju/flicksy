@@ -4,6 +4,8 @@
   const list = document.getElementById('projects-list');
   const close = document.getElementById('projects-close');
 
+  if (!button || !dialog || !list || !close) return;
+
   button.addEventListener('click', async () => {
     dialog.showModal();
     list.textContent = 'Loading projects…';

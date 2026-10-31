@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::{path::PathBuf, sync::Arc};
 use tokio::io::AsyncWriteExt;
 use topcoat::{
@@ -17,6 +17,8 @@ use topcoat::{
     view::{View, component, view},
 };
 
+mod accounts;
+mod auth;
 mod config;
 mod preview;
 mod production;
@@ -28,12 +30,61 @@ pub mod types;
 struct Args {
     #[arg(long, default_value = "config.toml")]
     config: PathBuf,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Manage user accounts.
+    Users {
+        #[command(subcommand)]
+        command: UsersCommand,
+    },
+}
+#[derive(Subcommand)]
+enum UsersCommand {
+    /// Add a user (password is prompted without echo).
+    Add { username: String },
+    /// List users.
+    List,
+    /// Remove a user and revoke their sessions.
+    Remove { username: String },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let config = config::Config::load(&args.config)?;
+    let db_path = config
+        .auth
+        .database
+        .clone()
+        .unwrap_or_else(|| config.projects_dir.join("flicksy.sqlite"));
+    let accounts = Arc::new(accounts::Accounts::open(
+        &db_path,
+        config.auth.secure_cookie,
+    )?);
+    if let Some(Command::Users { command }) = args.command {
+        match command {
+            UsersCommand::Add { username } => {
+                let password = read_password()?;
+                accounts.add(&username, &password)?;
+                println!("Added user: {username}");
+            }
+            UsersCommand::List => {
+                for username in accounts.list()? {
+                    println!("{username}");
+                }
+            }
+            UsersCommand::Remove { username } => {
+                accounts.remove(&username)?;
+                println!("Removed user: {username}");
+            }
+        }
+        return Ok(());
+    }
+    let auth = auth::AuthLayer::new(accounts);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -51,6 +102,7 @@ async fn main() -> Result<()> {
         listener,
         module_router!()
             .discover()
+            .app_context(auth.clone())
             .app_context(store)
             .app_context(renderer)
             .layer(TowerLayer::new(tower_http::trace::TraceLayer::new_for_http()
@@ -69,6 +121,8 @@ async fn main() -> Result<()> {
                         tracing::info!(status = response.status().as_u16(), elapsed_ms = latency.as_millis() as u64, "Request completed");
                     }
                 })))
+            .layer(auth)
+            .layer(BodyLimit::max(8192).at("/login"))
             .layer(BodyLimit::max(1024 * 1024 * 1024).at("/create-video"))
             .assets(AssetBundle::load()?)
             .build(),
@@ -77,7 +131,10 @@ async fn main() -> Result<()> {
 }
 
 #[layout]
-async fn layout(slot: Slot<'_>) -> Result<impl View> {
+async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
+    let is_login = topcoat::router::request::uri(cx).path() == "/login";
+    let username =
+        topcoat::context::try_request_context::<auth::SignedInUser>(cx).map(|user| user.0.clone());
     Ok(view! {
         <!DOCTYPE html>
         <html lang="en">
@@ -92,6 +149,7 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                 <script src=(topcoat::asset::asset!("js/images.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/credits.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/projects.js")) defer="defer"></script>
+                <script src=(topcoat::asset::asset!("js/account-menu.js")) defer="defer"></script>
                 <script
                     src=(topcoat::asset::asset!("js/form-validation.js"))
                     defer="defer"
@@ -128,6 +186,7 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                                 <option value="dark">"Dark"</option>
                             </select>
                         </label>
+                        if !is_login {
                         <button
                             id="projects-button"
                             type="button"
@@ -136,6 +195,18 @@ async fn layout(slot: Slot<'_>) -> Result<impl View> {
                         >
                             "Projects"
                         </button>
+                        if let Some(username) = username {
+                            <details id="account-menu" class="relative">
+                                <summary class="flex w-[100px] cursor-pointer list-none items-center gap-1 rounded-xl border border-border px-4 py-2 text-sm font-bold hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] [&::-webkit-details-marker]:hidden" title=(username.clone())>
+                                    <span class="min-w-0 flex-1 truncate">(username)</span>
+                                    <span aria-hidden="true">"▾"</span>
+                                </summary>
+                                <form method="post" action="/logout" class="absolute top-full right-0 z-10 mt-2 min-w-[140px] rounded-xl border border-border bg-card p-1 shadow-lg">
+                                    <button type="submit" class="w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]">"Log out"</button>
+                                </form>
+                            </details>
+                        }
+                        }
                     </div>
                 </header>
                 <dialog id="projects-dialog" aria-labelledby="projects-title" class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-card p-0 text-foreground shadow-xl backdrop:bg-black/50">
@@ -821,4 +892,32 @@ async fn create_video_button() -> Result<impl View> {
             "✦ Create video"
         </button>
     })
+}
+
+fn read_password() -> std::io::Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    if terminal {
+        eprint!("Password: ");
+        std::io::stderr().flush()?;
+        if !std::process::Command::new("stty")
+            .arg("-echo")
+            .status()?
+            .success()
+        {
+            return Err(std::io::Error::other("Could not disable terminal echo"));
+        }
+    }
+    let mut password = String::new();
+    let result = stdin.lock().read_line(&mut password);
+    if terminal {
+        let restored = std::process::Command::new("stty").arg("echo").status();
+        eprintln!();
+        if !restored?.success() {
+            return Err(std::io::Error::other("Could not restore terminal echo"));
+        }
+    }
+    result?;
+    Ok(password.trim_end_matches(['\r', '\n']).to_owned())
 }

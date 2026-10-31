@@ -1,6 +1,11 @@
 # Mount persistent storage at this path and make it writable by UID 10001.
 projects_dir = "/var/lib/flicksy/projects"
 
+# Database defaults to the persistent project directory.
+[auth]
+# Enable when the application is accessed via HTTPS.
+secure_cookie = false
+
 [server]
 host = "0.0.0.0"
 port = 3000
