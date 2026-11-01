@@ -16,6 +16,8 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default)]
     pub tracing: TracingConfig,
+    #[serde(default)]
+    pub operator: OperatorConfig,
     #[allow(dead_code)]
     pub llm: LlmConfig,
 }
@@ -83,6 +85,49 @@ impl LogLevel {
     }
 }
 
+/// Public installation contact, displayed on the privacy and terms pages.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OperatorConfig {
+    pub contact_email: String,
+}
+
+impl Default for OperatorConfig {
+    fn default() -> Self {
+        Self {
+            contact_email: "operator@example.com".into(),
+        }
+    }
+}
+
+impl OperatorConfig {
+    fn validate(&mut self) -> io::Result<()> {
+        self.contact_email = self.contact_email.trim().to_owned();
+        let valid = self
+            .contact_email
+            .split_once('@')
+            .is_some_and(|(local, domain)| {
+                !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+            })
+            && !self.contact_email.chars().any(|c| {
+                c.is_whitespace()
+                    || c.is_control()
+                    || matches!(c, '?' | '#' | '&' | '<' | '>' | '"' | ':' | ',' | ';')
+            });
+        if !valid {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "operator.contact_email must be a single email address without mailto parameters",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn contact_href(&self) -> String {
+        format!("mailto:{}", self.contact_email)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
@@ -99,6 +144,7 @@ impl Config {
         let contents = fs::read_to_string(path)?;
         let mut config: Self = toml::from_str(&contents)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        config.operator.validate()?;
         if config.projects_dir.as_os_str().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -111,15 +157,15 @@ impl Config {
                 .unwrap_or(Path::new("."))
                 .join(config.projects_dir);
         }
-        if let Some(database) = &mut config.auth.database {
-            if database.is_relative() {
-                *database = path.parent().unwrap_or(Path::new(".")).join(&*database);
-            }
+        if let Some(database) = &mut config.auth.database
+            && database.is_relative()
+        {
+            *database = path.parent().unwrap_or(Path::new(".")).join(&*database);
         }
-        if let Some(key_file) = &mut config.llm.api_key_file {
-            if key_file.is_relative() {
-                *key_file = path.parent().unwrap_or(Path::new(".")).join(&*key_file);
-            }
+        if let Some(key_file) = &mut config.llm.api_key_file
+            && key_file.is_relative()
+        {
+            *key_file = path.parent().unwrap_or(Path::new(".")).join(&*key_file);
         }
         if let Some(youtube) = &mut config.youtube {
             let base = path.parent().unwrap_or(Path::new("."));
@@ -219,6 +265,63 @@ mod tests {
         .unwrap();
         assert!(config.api_key_file.is_none());
         assert!(config.api_key_env.is_none());
+    }
+
+    #[test]
+    fn operator_contact_defaults_and_accepts_a_configured_mailbox() {
+        let base = "projects_dir='projects'\n[llm]\nbase_url='http://localhost/v1'\nmodel='test'\nrequest_timeout_seconds=10\n";
+        let default: Config = toml::from_str(base).unwrap();
+        assert_eq!(default.operator.contact_email, "operator@example.com");
+        let configured: Config = toml::from_str(&format!(
+            "{base}\n[operator]\ncontact_email=' privacy+flicksy@example.org '\n"
+        ))
+        .unwrap();
+        let mut operator = configured.operator;
+        operator.validate().unwrap();
+        assert_eq!(operator.contact_email, "privacy+flicksy@example.org");
+        assert_eq!(
+            operator.contact_href(),
+            "mailto:privacy+flicksy@example.org"
+        );
+        assert!(toml::from_str::<OperatorConfig>("contact_emali='test@example.com'").is_err());
+    }
+
+    #[test]
+    fn invalid_operator_contacts_fail_config_loading() {
+        let root =
+            std::env::temp_dir().join(format!("flicksy-contact-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        for email in [
+            "",
+            "not-an-email",
+            "@example.com",
+            "a@",
+            "a@b@c",
+            "a b@example.com",
+            "a@example.com?bcc=other@example.com",
+            "a@example.com#fragment",
+            "a@example.com,other@example.com",
+        ] {
+            std::fs::write(&path, format!(
+                "projects_dir='projects'\n[operator]\ncontact_email='{email}'\n[llm]\nbase_url='http://localhost/v1'\nmodel='test'\nrequest_timeout_seconds=10\n"
+            )).unwrap();
+            assert_eq!(
+                Config::load(&path).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{email}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn example_configs_load_with_placeholder_contacts() {
+        for file in ["config.example.toml", "docker/config.toml"] {
+            let config = Config::load(Path::new(file)).unwrap();
+            assert_eq!(config.operator.contact_email, "operator@example.com");
+            assert_eq!(config.llm.model, "YOUR_TOOL_CALLING_MODEL");
+        }
     }
 
     #[test]

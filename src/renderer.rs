@@ -44,13 +44,14 @@ impl Renderer {
         }
     }
     fn update(&self, id: &str, generation: &Arc<()>, state: &str, message: impl Into<String>) {
-        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
-            if job.progress.state == "running" && Arc::ptr_eq(&job.generation, generation) {
-                job.progress = Progress {
-                    state: state.into(),
-                    message: message.into(),
-                };
-            }
+        if let Some(job) = self.jobs.lock().unwrap().get_mut(id)
+            && job.progress.state == "running"
+            && Arc::ptr_eq(&job.generation, generation)
+        {
+            job.progress = Progress {
+                state: state.into(),
+                message: message.into(),
+            };
         }
     }
     pub fn status(&self, id: &str) -> Option<Progress> {
@@ -151,9 +152,8 @@ impl Renderer {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let render_dir = create_render_dir(path).await?;
         tracing::info!(run_dir = %render_dir.display(), "Render workspace created");
-        let key = self.config.api_key().await.map_err(|error| {
+        let key = self.config.api_key().await.inspect_err(|error| {
             tracing::error!(error_kind = ?error.kind(), "Failed to load LLM credentials");
-            error
         })?;
         tracing::info!(model = %self.config.model, authenticated = key.is_some(), timeout_seconds = self.config.request_timeout_seconds, "LLM configured");
         let http = rig::rig_reqwest::reqwest::Client::builder()
@@ -176,8 +176,8 @@ impl Renderer {
         );
         self.update(id, generation, "running", "Planning video production");
         tracing::info!("Agent loop started");
-        let answer = agent.prompt(prompt).await.map_err(|error| {
-            let category = match &error {
+        let answer = agent.prompt(prompt).await.inspect_err(|error| {
+            let category = match error {
                 rig::prelude::PromptError::Provider(_) => "provider",
                 rig::prelude::PromptError::Report(_) => "report",
                 rig::prelude::PromptError::Memory { .. } => "memory",
@@ -187,23 +187,20 @@ impl Renderer {
                 _ => "other",
             };
             tracing::error!(category, provider_status = ?error.provider_response_status().map(|s| s.as_u16()), provider_request_id = ?error.provider_request_id(), "Agent loop failed");
-            error
         })?;
         tracing::info!("Agent loop finished");
-        let result: Output = serde_json::from_str(answer.output().trim()).map_err(|error| {
+        let result: Output = serde_json::from_str(answer.output().trim()).inspect_err(|error| {
             tracing::error!(
                 line = error.line(),
                 column = error.column(),
                 "Agent result was not valid JSON"
             );
-            error
         })?;
         let root = tokio::fs::canonicalize(path).await?;
         let output = tokio::fs::canonicalize(root.join(&result.output_path))
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::error!(error_kind = ?error.kind(), "Cannot resolve agent output");
-                error
             })?;
         if !output.starts_with(&root) || !output.is_file() {
             tracing::error!("Agent output path is not a project file");
@@ -224,9 +221,8 @@ impl Renderer {
             .arg(&output)
             .output()
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tracing::error!(error_kind = ?error.kind(), "Could not run ffprobe");
-                error
             })?;
         if !probe.status.success()
             || !String::from_utf8_lossy(&probe.stdout)
@@ -308,7 +304,7 @@ impl Tool for Shell {
             .arg(args.command)
             .current_dir(&self.path)
             .output()
-            .await.map_err(|error| { tracing::error!(project_id = %self.id, error_kind = ?error.kind(), "Agent tool could not start"); error })?;
+            .await.inspect_err(|error| { tracing::error!(project_id = %self.id, error_kind = ?error.kind(), "Agent tool could not start"); })?;
         tracing::info!(project_id = %self.id, exit_code = ?output.status.code(), elapsed_ms = started.elapsed().as_millis() as u64, stdout_bytes = output.stdout.len(), stderr_bytes = output.stderr.len(), "Agent tool finished");
         let log = if !output.status.success() {
             if let Some(log_path) = args.log_path {

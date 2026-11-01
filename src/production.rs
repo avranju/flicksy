@@ -81,7 +81,9 @@ async fn production(cx: &Cx) -> Result<impl View> {
                     "Checking production status…"
                 </p>
                 <div class="mt-6 border-t border-border pt-6">
-                    <h3 class="text-xs font-bold text-muted-foreground">"PRODUCTION STEPS"</h3>
+                    <h3 class="text-xs font-bold text-muted-foreground">
+                        "PRODUCTION STEPS"
+                    </h3>
                     <div
                         class="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm"
                     >
@@ -107,7 +109,10 @@ async fn production(cx: &Cx) -> Result<impl View> {
                         <span class="min-w-0 flex-1 font-semibold">
                             "Producing video"
                         </span>
-                        <span id="production-step-state" class="text-xs text-accent-ink">
+                        <span
+                            id="production-step-state"
+                            class="text-xs text-accent-ink"
+                        >
                             "In progress"
                         </span>
                     </div>

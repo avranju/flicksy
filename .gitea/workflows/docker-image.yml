@@ -8,10 +8,13 @@ on:
         required: true
         type: string
 
+# Configure repository variables before using this optional publishing workflow:
+# REGISTRY=registry.example.com, REGISTRY_USERNAME=YOUR_REGISTRY_USERNAME,
+# IMAGE_NAME=YOUR_NAMESPACE/flicksy. Store the credential as secret PACKAGE_TOKEN.
 env:
-  REGISTRY: registry.nerdworks.dev
+  REGISTRY: ${{ vars.REGISTRY }}
   REGISTRY_USERNAME: ${{ vars.REGISTRY_USERNAME }}
-  IMAGE_NAME: avranju/flicksy
+  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
   IMAGE_TAG: ${{ inputs.tag }}
 
 jobs:
@@ -22,16 +25,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Validate image tag
+      - name: Validate registry configuration and image tag
         run: |
+          : "${REGISTRY:?Set the REGISTRY repository variable (for example registry.example.com)}"
+          : "${REGISTRY_USERNAME:?Set the REGISTRY_USERNAME repository variable}"
+          : "${IMAGE_NAME:?Set the IMAGE_NAME repository variable (for example YOUR_NAMESPACE/flicksy)}"
           if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
             echo "Invalid Docker image tag: $IMAGE_TAG" >&2
             exit 1
           fi
 
-      - name: Log in to Gitea container registry
+      - name: Log in to container registry
+        env:
+          PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
         run: |
-          printf '%s' "${{ secrets.PACKAGE_TOKEN }}" \
+          : "${PACKAGE_TOKEN:?Set the PACKAGE_TOKEN repository secret}"
+          printf '%s' "$PACKAGE_TOKEN" \
             | docker login "$REGISTRY" \
               --username "$REGISTRY_USERNAME" \
               --password-stdin

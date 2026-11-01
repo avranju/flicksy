@@ -1,6 +1,11 @@
 # Relative paths are resolved relative to this configuration file.
 projects_dir = "projects"
 
+# Public contact shown on the privacy policy and terms pages.
+# Replace this placeholder before sharing your installation; restart to apply.
+[operator]
+contact_email = "operator@example.com"
+
 # Accounts, persistent sessions, and projects default to projects_dir/flicksy.sqlite.
 # Set secure_cookie = true when serving through HTTPS.
 [auth]
@@ -25,10 +30,11 @@ port = 3000
 level = "info"
 
 [llm]
-base_url = "http://rust-arch:6284/v1"
-model = "openai/gpt-6.1-terra"
+# Replace with your OpenAI-compatible endpoint and tool-calling model ID.
+base_url = "https://llm.example.com/v1"
+model = "YOUR_TOOL_CALLING_MODEL"
 # Optional: set api_key_env to the name of an environment variable. It takes
 # precedence over api_key_file when both are configured. Omit both for no auth.
 # api_key_env = "FLICKSY_API_KEY"
-# api_key_file = "/var/run/secrets/classifier_api_key"
+# api_key_file = "/run/secrets/flicksy_api_key"
 request_timeout_seconds = 120

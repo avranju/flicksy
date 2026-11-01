@@ -4,6 +4,32 @@
 .aws
 target
 projects
-config.toml
-.env
-.env.*
+examples/media
+**/__pycache__
+**/*.py[cod]
+
+# Do not send deployment configuration or credentials to the builder.
+**/config.toml
+**/config.*.toml
+!config.example.toml
+!docker/config.toml
+**/*.local.toml
+**/flicksy-container.toml
+**/.env
+**/.env.*
+**/secrets
+**/*_api_key
+**/*_client_secret
+**/*_encryption_key
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Local databases and SQLite journals.
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/*.db-*

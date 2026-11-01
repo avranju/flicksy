@@ -90,6 +90,9 @@ async fn main() -> Result<()> {
             UsersCommand::Remove { username } => {
                 accounts.remove(&username)?;
                 println!("Removed user: {username}");
+                println!(
+                    "Any YouTube authorization is queued for revocation by the running server or at its next startup."
+                );
             }
         }
         return Ok(());
@@ -108,6 +111,7 @@ async fn main() -> Result<()> {
     let listener =
         tokio::net::TcpListener::bind((config.server.host.as_str(), config.server.port)).await?;
     tracing::info!(address = %listener.local_addr()?, "Server listening");
+    let _youtube_maintenance = youtube.start_maintenance();
     let renderer = renderer::Renderer::new(config.llm, store.clone());
     Ok(topcoat::serve(
         listener,
@@ -117,6 +121,7 @@ async fn main() -> Result<()> {
             .app_context(store)
             .app_context(renderer)
             .app_context(youtube)
+            .app_context(config.operator)
             .layer(TowerLayer::new(tower_http::trace::TraceLayer::new_for_http()
                 .make_span_with(|request: &http::Request<topcoat::router::Body>| {
                     if request.uri().path() == "/render-status" {
@@ -165,7 +170,10 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                 <script src=(topcoat::asset::asset!("js/images.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/credits.js")) defer="defer"></script>
                 <script src=(topcoat::asset::asset!("js/projects.js")) defer="defer"></script>
-                <script src=(topcoat::asset::asset!("js/account-menu.js")) defer="defer"></script>
+                <script
+                    src=(topcoat::asset::asset!("js/account-menu.js"))
+                    defer="defer"
+                ></script>
                 <script src=(topcoat::asset::asset!("js/youtube.js")) defer="defer"></script>
                 <script
                     src=(topcoat::asset::asset!("js/form-validation.js"))
@@ -182,7 +190,11 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                     <div
                         class="mx-auto flex w-full max-w-[1192px] flex-wrap items-center gap-3"
                     >
-                        <a href="/" aria-label="Flicksy - new project" class="flex shrink-0 items-center gap-3 no-underline text-inherit">
+                        <a
+                            href="/"
+                            aria-label="Flicksy - new project"
+                            class="flex shrink-0 items-center gap-3 no-underline text-inherit"
+                        >
                             <div
                                 class="flex size-9 items-center justify-center rounded-[11px] bg-[#6554e8] text-[23px] font-bold text-white"
                             >
@@ -195,52 +207,98 @@ async fn layout(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                         <p class="text-[13px] text-muted-foreground">
                             "Turn songs and photos into videos."
                         </p>
-                        <label class="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+                        <label
+                            class="ml-auto flex items-center gap-2 text-sm text-muted-foreground"
+                        >
                             <span>"Theme"</span>
-                            <select id="theme-select" class="cursor-pointer rounded-lg border border-border bg-card px-2 py-2 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]" aria-label="Color theme">
+                            <select
+                                id="theme-select"
+                                class="cursor-pointer rounded-lg border border-border bg-card px-2 py-2 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]"
+                                aria-label="Color theme"
+                            >
                                 <option value="system">"System"</option>
                                 <option value="light">"Light"</option>
                                 <option value="dark">"Dark"</option>
                             </select>
                         </label>
                         if !is_public {
-                        <button
-                            id="projects-button"
-                            type="button"
-                            aria-haspopup="dialog"
-                            class="rounded-xl bg-[#6554e8] px-4 py-2 text-sm font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
-                        >
-                            "Projects"
-                        </button>
-                        if let Some(username) = username {
-                            <details id="account-menu" class="relative">
-                                <summary class="flex w-[100px] cursor-pointer list-none items-center gap-1 rounded-xl border border-border px-4 py-2 text-sm font-bold hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] [&::-webkit-details-marker]:hidden" title=(username.clone())>
-                                    <span class="min-w-0 flex-1 truncate">(username)</span>
-                                    <span aria-hidden="true">"▾"</span>
-                                </summary>
-                                <div class="absolute top-full right-0 z-10 mt-2 min-w-[160px] rounded-xl border border-border bg-card p-1 shadow-lg">
-                                    <a href="/youtube/settings" class="block rounded-lg px-3 py-2 text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]">"YouTube settings"</a>
-                                <form method="post" action="/logout">
-                                    <button type="submit" class="w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]">"Log out"</button>
-                                </form>
-                                </div>
-                            </details>
-                        }
+                            <button
+                                id="projects-button"
+                                type="button"
+                                aria-haspopup="dialog"
+                                class="rounded-xl bg-[#6554e8] px-4 py-2 text-sm font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
+                            >
+                                "Projects"
+                            </button>
+                            if let Some(username) = username {
+                                <details id="account-menu" class="relative">
+                                    <summary
+                                        class="flex w-[100px] cursor-pointer list-none items-center gap-1 rounded-xl border border-border px-4 py-2 text-sm font-bold hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] [&::-webkit-details-marker]:hidden"
+                                        title=(username.clone())
+                                    >
+                                        <span class="min-w-0 flex-1 truncate">(username)</span>
+                                        <span aria-hidden="true">"▾"</span>
+                                    </summary>
+                                    <div
+                                        class="absolute top-full right-0 z-10 mt-2 min-w-[160px] rounded-xl border border-border bg-card p-1 shadow-lg"
+                                    >
+                                        <a
+                                            href="/youtube/settings"
+                                            class="block rounded-lg px-3 py-2 text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]"
+                                        >
+                                            "YouTube settings"
+                                        </a>
+                                        <form method="post" action="/logout">
+                                            <button
+                                                type="submit"
+                                                class="w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-surface focus-visible:outline-2 focus-visible:outline-[#6554e8]"
+                                            >
+                                                "Log out"
+                                            </button>
+                                        </form>
+                                    </div>
+                                </details>
+                            }
                         }
                     </div>
                 </header>
-                <dialog id="projects-dialog" aria-labelledby="projects-title" class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-card p-0 text-foreground shadow-xl backdrop:bg-black/50">
-                    <div class="flex items-center justify-between gap-4 bg-background px-6 py-4">
-                        <h2 id="projects-title" class="text-xl font-bold">"Projects"</h2>
-                        <button id="projects-close" type="button" aria-label="Close projects" class="cursor-pointer rounded-lg px-2 py-1 text-xl text-muted-foreground hover:bg-background focus-visible:outline-2 focus-visible:outline-[#6554e8]">"×"</button>
+                <dialog
+                    id="projects-dialog"
+                    aria-labelledby="projects-title"
+                    class="m-auto w-[calc(100%-3rem)] max-w-md overflow-hidden rounded-[20px] border-0 bg-card p-0 text-foreground shadow-xl backdrop:bg-black/50"
+                >
+                    <div
+                        class="flex items-center justify-between gap-4 bg-background px-6 py-4"
+                    >
+                        <h2 id="projects-title" class="text-xl font-bold">
+                            "Projects"
+                        </h2>
+                        <button
+                            id="projects-close"
+                            type="button"
+                            aria-label="Close projects"
+                            class="cursor-pointer rounded-lg px-2 py-1 text-xl text-muted-foreground hover:bg-background focus-visible:outline-2 focus-visible:outline-[#6554e8]"
+                        >
+                            "×"
+                        </button>
                     </div>
-                    <div id="projects-list" class="max-h-[60vh] overflow-y-auto bg-card px-6 py-2" aria-live="polite"></div>
+                    <div
+                        id="projects-list"
+                        class="max-h-[60vh] overflow-y-auto bg-card px-6 py-2"
+                        aria-live="polite"
+                    ></div>
                 </dialog>
                 (slot)
-                <footer class="mx-auto max-w-[1192px] px-6 pb-6 text-sm text-muted-foreground">
-                    <a href="/privacy" class="underline hover:text-accent-ink">"Privacy policy"</a>
+                <footer
+                    class="mx-auto max-w-[1192px] px-6 pb-6 text-sm text-muted-foreground"
+                >
+                    <a href="/privacy" class="underline hover:text-accent-ink">
+                        "Privacy policy"
+                    </a>
                     <span aria-hidden="true">" · "</span>
-                    <a href="/terms" class="underline hover:text-accent-ink">"Terms of service"</a>
+                    <a href="/terms" class="underline hover:text-accent-ink">
+                        "Terms of service"
+                    </a>
                 </footer>
             </body>
         </html>
@@ -342,13 +400,12 @@ async fn submit_video(cx: &Cx, mut multipart: Multipart) -> Result<Json<serde_js
         ),
         None => None,
     };
-    if let Some(id) = &query.id {
-        if app_context::<renderer::Renderer>(cx)
+    if let Some(id) = &query.id
+        && app_context::<renderer::Renderer>(cx)
             .status(id)
             .is_some_and(|p| p.state == "running")
-        {
-            return Err(bad_request("A render is already running").into());
-        }
+    {
+        return Err(bad_request("A render is already running").into());
     }
     tracing::info!(
         project_id = query.id.as_deref().unwrap_or("new"),

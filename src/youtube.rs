@@ -25,6 +25,31 @@ use topcoat::{
     view::{View, view},
 };
 
+mod lifecycle;
+pub(crate) use lifecycle::queue_account_revocation;
+
+struct ActiveUpload {
+    id: String,
+    task: tokio::task::AbortHandle,
+}
+
+struct UploadRegistration {
+    youtube: YouTube,
+    user: String,
+    id: String,
+}
+impl Drop for UploadRegistration {
+    fn drop(&mut self) {
+        let mut active = self.youtube.inner.active.lock().unwrap();
+        if active
+            .get(&self.user)
+            .is_some_and(|upload| upload.id == self.id)
+        {
+            active.remove(&self.user);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct YouTube {
     inner: Arc<Inner>,
@@ -36,7 +61,8 @@ struct Inner {
     database: PathBuf,
     client: reqwest::Client,
     flows: Mutex<HashMap<String, Flow>>,
-    active: Mutex<HashMap<String, String>>,
+    active: Mutex<HashMap<String, ActiveUpload>>,
+    account_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     connection_generation: Mutex<HashMap<String, u64>>,
     #[cfg(test)]
     test_origin: Mutex<Option<String>>,
@@ -113,18 +139,23 @@ impl YouTube {
                     .map_err(ioerr)?,
                 flows: Mutex::new(HashMap::new()),
                 active: Mutex::new(HashMap::new()),
+                account_locks: Mutex::new(HashMap::new()),
                 connection_generation: Mutex::new(HashMap::new()),
                 #[cfg(test)]
                 test_origin: Mutex::new(None),
             }),
         };
         this.db()?.execute_batch("CREATE TABLE IF NOT EXISTS youtube_connections (username TEXT PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE, token BLOB NOT NULL, channel_id TEXT NOT NULL, channel_title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS youtube_uploads (id TEXT PRIMARY KEY, username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT, render INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, privacy TEXT NOT NULL, made_for_kids INTEGER NOT NULL, state TEXT NOT NULL, session BLOB, sent INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, video_id TEXT, error TEXT, actual_privacy TEXT, channel_id TEXT NOT NULL); CREATE UNIQUE INDEX IF NOT EXISTS youtube_pending_render ON youtube_uploads(username,project_id,render) WHERE state IN ('queued','uploading','interrupted');").map_err(ioerr)?;
+        this.initialize_lifecycle_schema()?;
         Ok(this)
     }
     fn db(&self) -> io::Result<Connection> {
         let c = Connection::open(&self.inner.database).map_err(ioerr)?;
         c.busy_timeout(Duration::from_secs(5)).map_err(ioerr)?;
         c.pragma_update(None, "foreign_keys", "ON").map_err(ioerr)?;
+        // Backups and filesystem snapshots still need operator-managed expiration.
+        c.pragma_update(None, "secure_delete", "ON")
+            .map_err(ioerr)?;
         Ok(c)
     }
     fn endpoint(&self, path: &str, default: &str) -> String {
@@ -218,10 +249,17 @@ impl YouTube {
                 |r| r.get(0),
             )
             .map_err(ioerr)?;
-        if !session_exists {
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM youtube_revocations WHERE username=?1)",
+                [user],
+                |r| r.get(0),
+            )
+            .map_err(ioerr)?;
+        if !session_exists || pending {
             return Ok(false);
         }
-        tx.execute("INSERT INTO youtube_connections(username,token,channel_id,channel_title) VALUES (?1,?2,?3,?4) ON CONFLICT(username) DO UPDATE SET token=excluded.token,channel_id=excluded.channel_id,channel_title=excluded.channel_title",params![user,token,channel,title]).map_err(ioerr)?;
+        tx.execute("INSERT INTO youtube_connections(username,token,channel_id,channel_title,last_verified_at) VALUES (?1,?2,?3,?4,unixepoch()) ON CONFLICT(username) DO UPDATE SET token=excluded.token,channel_id=excluded.channel_id,channel_title=excluded.channel_title,last_verified_at=excluded.last_verified_at",params![user,token,channel,title]).map_err(ioerr)?;
         tx.commit().map_err(ioerr)?;
         Ok(true)
     }
@@ -235,6 +273,7 @@ impl YouTube {
             .inner
             .client
             .post(self.endpoint("/token", "https://oauth2.googleapis.com/token"))
+            .timeout(Duration::from_secs(30))
             .form(&[
                 ("client_id", c.client_id.as_str()),
                 ("client_secret", self.inner.secret.as_str()),
@@ -244,19 +283,37 @@ impl YouTube {
             .send()
             .await
             .map_err(|_| ioerr("Google token service unavailable"))?;
-        if !r.status().is_success() {
-            return Err(ioerr(
-                "YouTube authorization expired or was revoked; reconnect",
-            ));
-        }
+        let status = r.status();
         let v: serde_json::Value = r
             .json()
             .await
             .map_err(|_| ioerr("Invalid Google token response"))?;
-        v["access_token"]
+        if !status.is_success() {
+            if status == StatusCode::BAD_REQUEST && v["error"].as_str() == Some("invalid_grant") {
+                self.erase_youtube_data(user, Some(&token), false)?;
+                return Err(ioerr(
+                    "YouTube authorization expired or was revoked; local YouTube data was removed",
+                ));
+            }
+            return Err(ioerr(
+                "Google token service unavailable or misconfigured; retry later",
+            ));
+        }
+        let access = v["access_token"]
             .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| ioerr("Missing Google access token"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ioerr("Missing Google access token"))?
+            .to_owned();
+        let updated = self.db()?.execute(
+            "UPDATE youtube_connections SET last_verified_at=unixepoch() WHERE username=?1 AND token=?2",
+            params![user, token],
+        ).map_err(ioerr)?;
+        if updated != 1 {
+            return Err(ioerr(
+                "YouTube connection changed during authorization check",
+            ));
+        }
+        Ok(access)
     }
 }
 fn redirect(location: &str) -> Result<Response> {
@@ -304,41 +361,240 @@ async fn youtube_page(cx: &Cx) -> Result<impl View> {
         .map_err(|_| bad_request("Render not found"))?;
     let enabled = yt.inner.config.is_some();
     let connection = yt.connection(user)?;
+    let pending = yt.revocation_pending(user)?;
     let connected = connection.is_some();
     let channel = connection.map(|c| c.2).unwrap_or_default();
     let back = format!("/preview?id={}&render={}", q.id, q.render);
-    Ok(
-        view! { <main class="mx-auto max-w-[824px] px-6 pt-10 pb-16"><h1 class="text-3xl font-bold">"Upload to YouTube"</h1><p class="mt-3 text-muted-foreground">"Review the details for this render before uploading."</p>
-        <section id="youtube-page" data-project=(q.id.clone()) data-render=(q.render.to_string()) class="mt-8 rounded-[20px] bg-card p-6 sm:p-10">
-        if q.error.as_deref() == Some("denied") { <p role="alert" class="mb-4 text-danger-ink">"Google authorization was cancelled or denied. You can try connecting again."</p> }
-        if !enabled { <p>"YouTube integration is not configured on this server."</p> }
-        else { if connected { <p>"Connected channel: " <strong>(channel)</strong></p> <form method="post" action="/youtube/disconnect" class="mt-3"><button class="text-accent-ink underline" type="submit">"Disconnect YouTube"</button></form> }
-        else { <form method="post" action="/youtube/connect"><input type="hidden" name="id" value=(q.id.clone())><input type="hidden" name="render" value=(q.render.to_string())><button class="rounded-xl bg-[#6554e8] px-4 py-3 font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]" type="submit">"Connect YouTube"</button></form> }
-        if connected { <form id="youtube-upload-form" class="mt-6 flex flex-col gap-4" data-project=(q.id.clone()) data-render=(q.render.to_string())>
-        <label class="flex flex-col gap-2">"Title (up to 100 characters)" <input name="title" required="required" value=(title) class="rounded-xl border border-border bg-surface p-3"></label>
-        <label class="flex flex-col gap-2">"Description" <textarea name="description" rows="5" class="rounded-xl border border-border bg-surface p-3"></textarea></label>
-        <label class="flex flex-col gap-2">"Visibility" <select name="privacy" class="rounded-xl border border-border bg-surface p-3"><option value="private">"Private"</option><option value="unlisted">"Unlisted"</option><option value="public">"Public"</option></select></label>
-        <label class="flex flex-col gap-2">"Is this video made for kids?" <select name="made_for_kids" required="required" class="rounded-xl border border-border bg-surface p-3"><option value="">"Choose an audience"</option><option value="true">"Yes, made for kids"</option><option value="false">"No, not made for kids"</option></select></label>
-        <label><input type="checkbox" name="certify" required="required">" I confirm this video complies with " <a href="https://www.youtube.com/howyoutubeworks/policies/community-guidelines/" target="_blank" rel="noopener noreferrer" class="text-accent-ink underline">"YouTube's Community Guidelines"</a>"."</label>
-        <button type="submit" class="rounded-xl bg-[#6554e8] px-4 py-3 font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd] disabled:cursor-not-allowed disabled:opacity-60">"Upload to YouTube"</button></form> }
-        }
-        <p id="youtube-status" role="status" aria-live="polite" class="mt-4"></p> <a id="youtube-link" hidden="hidden" target="_blank" rel="noopener noreferrer" class="mt-4 inline-block text-accent-ink underline">"Open on YouTube"</a>
-        <div id="youtube-history" class="mt-4"></div>
-        <a href=(back) class="mt-6 inline-block text-accent-ink underline">"Back to preview"</a></section></main> },
-    )
+    Ok(view! {
+        <main class="mx-auto max-w-[824px] px-6 pt-10 pb-16">
+            <h1 class="text-3xl font-bold">"Upload to YouTube"</h1>
+            <p class="mt-3 text-muted-foreground">
+                "Review the details for this render before uploading."
+            </p>
+            <section
+                id="youtube-page"
+                data-project=(q.id.clone())
+                data-render=(q.render.to_string())
+                class="mt-8 rounded-[20px] bg-card p-6 sm:p-10"
+            >
+                if q.error.as_deref() == Some("denied") {
+                    <p role="alert" class="mb-4 text-danger-ink">
+                        "Google authorization was cancelled or denied. You can try connecting again."
+                    </p>
+                }
+                if !enabled {
+                    <p>"YouTube integration is not configured on this server."</p>
+                } else if pending {
+                    <p>
+                        "Google revocation is pending. Local YouTube data has been deleted. "
+                        <a href="/youtube/settings" class="text-accent-ink underline">
+                            "Review or retry revocation in YouTube settings."
+                        </a>
+                    </p>
+                } else {
+                    if connected {
+                        <p>
+                            "Connected channel: "
+                            <strong>(channel)</strong>
+                        </p>
+                        <a
+                            href="/youtube/settings"
+                            class="mt-3 inline-block text-accent-ink underline"
+                        >
+                            "Manage or disconnect YouTube"
+                        </a>
+                    } else {
+                        <form method="post" action="/youtube/connect">
+                            <input type="hidden" name="id" value=(q.id.clone())>
+                            <input
+                                type="hidden"
+                                name="render"
+                                value=(q.render.to_string())
+                            >
+                            <button
+                                class="rounded-xl bg-[#6554e8] px-4 py-3 font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd]"
+                                type="submit"
+                            >
+                                "Connect YouTube"
+                            </button>
+                        </form>
+                    }
+                    if connected {
+                        <form
+                            id="youtube-upload-form"
+                            class="mt-6 flex flex-col gap-4"
+                            data-project=(q.id.clone())
+                            data-render=(q.render.to_string())
+                        >
+                            <label class="flex flex-col gap-2">
+                                "Title (up to 100 characters)"
+                                <input
+                                    name="title"
+                                    required="required"
+                                    value=(title)
+                                    class="rounded-xl border border-border bg-surface p-3"
+                                >
+                            </label>
+                            <label class="flex flex-col gap-2">
+                                "Description"
+                                <textarea
+                                    name="description"
+                                    rows="5"
+                                    class="rounded-xl border border-border bg-surface p-3"
+                                ></textarea>
+                            </label>
+                            <label class="flex flex-col gap-2">
+                                "Visibility"
+                                <select
+                                    name="privacy"
+                                    class="rounded-xl border border-border bg-surface p-3"
+                                >
+                                    <option value="private">"Private"</option>
+                                    <option value="unlisted">"Unlisted"</option>
+                                    <option value="public">"Public"</option>
+                                </select>
+                            </label>
+                            <label class="flex flex-col gap-2">
+                                "Is this video made for kids?"
+                                <select
+                                    name="made_for_kids"
+                                    required="required"
+                                    class="rounded-xl border border-border bg-surface p-3"
+                                >
+                                    <option value="">"Choose an audience"</option>
+                                    <option value="true">"Yes, made for kids"</option>
+                                    <option value="false">"No, not made for kids"</option>
+                                </select>
+                            </label>
+                            <label>
+                                <input type="checkbox" name="certify" required="required">
+                                " I confirm this video complies with "
+                                <a
+                                    href="https://www.youtube.com/howyoutubeworks/policies/community-guidelines/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    class="text-accent-ink underline"
+                                >
+                                    "YouTube's Community Guidelines"
+                                </a>
+                                "."
+                            </label>
+                            <button
+                                type="submit"
+                                class="rounded-xl bg-[#6554e8] px-4 py-3 font-bold text-white cursor-pointer transition motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100 hover:bg-[#5544d4] active:bg-[#4939bd] disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                "Upload to YouTube"
+                            </button>
+                        </form>
+                    }
+                }
+                <p id="youtube-status" role="status" aria-live="polite" class="mt-4"></p>
+                <a
+                    id="youtube-link"
+                    hidden="hidden"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="mt-4 inline-block text-accent-ink underline"
+                >
+                    "Open on YouTube"
+                </a>
+                <div id="youtube-history" class="mt-4"></div>
+                <a href=(back) class="mt-6 inline-block text-accent-ink underline">
+                    "Back to preview"
+                </a>
+            </section>
+        </main>
+    })
 }
+#[query_params(error = bad_request)]
+struct SettingsQuery {
+    disconnected: Option<String>,
+}
+
 #[page("/youtube/settings")]
 async fn settings(cx: &Cx) -> Result<impl View> {
+    let q = query_params::<SettingsQuery>(cx)?;
     let yt = app_context::<YouTube>(cx);
-    let connection = yt.connection(auth::username(cx))?;
+    let user = auth::username(cx);
+    let connection = yt.connection(user)?;
+    let connected = connection.is_some();
+    let pending = yt.revocation_pending(user)?;
     let enabled = yt.inner.config.is_some();
-    Ok(
-        view! { <main class="mx-auto max-w-[824px] px-6 pt-10 pb-16"><h1 class="text-3xl font-bold">"YouTube connection"</h1><section class="mt-8 rounded-[20px] bg-card p-6 sm:p-10">
-        if !enabled { <p>"YouTube integration is not configured on this server."</p> }
-        else if let Some((_, _, title)) = connection { <p>"Connected channel: " <strong>(title)</strong></p><form method="post" action="/youtube/disconnect" class="mt-4"><button type="submit" class="rounded-xl border border-border px-4 py-2 font-semibold">"Disconnect YouTube"</button></form><p class="mt-4 text-sm text-muted-foreground">"Disconnecting removes Flicksy's stored authorization. You can also revoke access in " <a class="text-accent-ink underline" href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">"your Google account"</a>"."</p> }
-        else { <p>"No YouTube channel connected. Open a video preview to connect and upload."</p> }
-        <a class="mt-6 inline-block text-accent-ink underline" href="/">"Back to projects"</a></section></main> },
-    )
+    Ok(view! {
+        <main class="mx-auto max-w-[824px] px-6 pt-10 pb-16">
+            <h1 class="text-3xl font-bold">"YouTube connection"</h1>
+            <section class="mt-8 rounded-[20px] bg-card p-6 sm:p-10">
+                if q.disconnected.as_deref() == Some("revoked") {
+                    <p role="status" class="mb-4">
+                        "YouTube is disconnected and local YouTube data was deleted."
+                    </p>
+                }
+                if !pending && q.disconnected.as_deref() == Some("pending") {
+                    <p role="alert" class="mb-4">
+                        "Local YouTube data was deleted, but Google revocation was not confirmed. Revoke access directly in Google account permissions."
+                    </p>
+                }
+                if pending {
+                    <p role="status" class="mb-4">
+                        "Local YouTube data has been deleted. Google revocation is not yet confirmed; Flicksy will retry hourly for up to seven days. Revoke access directly in your Google account permissions if necessary. Reconnecting is blocked while revocation is pending."
+                    </p>
+                    <form method="post" action="/youtube/disconnect" class="mb-4">
+                        <button type="submit" class="text-accent-ink underline">
+                            "Retry Google revocation"
+                        </button>
+                    </form>
+                }
+                if !enabled {
+                    <p>"YouTube integration is not configured on this server."</p>
+                } else if let Some((_, _, title)) = connection {
+                    <p>
+                        "Connected channel: "
+                        <strong>(title)</strong>
+                    </p>
+                    <p class="mt-4 text-sm text-muted-foreground">
+                        "Disconnecting stops active uploads, revokes Google authorization, and deletes your stored channel details, upload history, video links, and resumable-upload sessions. It does not delete projects, original media, local renders, or videos already on YouTube. You can also revoke access in "
+                        <a
+                            class="text-accent-ink underline"
+                            href="https://myaccount.google.com/permissions"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            "your Google account"
+                        </a>
+                        "."
+                    </p>
+                } else {
+                    <p>
+                        "No YouTube channel connected. Open a video preview to connect and upload."
+                    </p>
+                }
+                if connected {
+                    <form method="post" action="/youtube/disconnect" class="mt-4">
+                        <button
+                            type="submit"
+                            class="rounded-xl border border-border px-4 py-2 font-semibold"
+                        >
+                            "Disconnect and delete YouTube data"
+                        </button>
+                    </form>
+                }
+                <p class="mt-4 text-sm text-muted-foreground">
+                    "Deleting local YouTube data cannot undo an upload already received by YouTube. Manage or delete published videos in YouTube Studio."
+                    <a
+                        href="https://myaccount.google.com/permissions"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="ml-1 text-accent-ink underline"
+                    >
+                        "Google account permissions"
+                    </a>
+                </p>
+                <a class="mt-6 inline-block text-accent-ink underline" href="/">
+                    "Back to projects"
+                </a>
+            </section>
+        </main>
+    })
 }
 #[derive(Deserialize)]
 struct Connect {
@@ -352,6 +608,16 @@ async fn connect(
 ) -> Result<Response> {
     let yt = app_context::<YouTube>(cx);
     let user = auth::username(cx);
+    let _guard = yt
+        .account_lock(user)
+        .try_lock_owned()
+        .map_err(|_| bad_request("YouTube connection is being updated; try again"))?;
+    if yt.revocation_pending(user)? || yt.connection(user)?.is_some() {
+        return Err(bad_request(
+            "Disconnect the existing channel and finish revocation before connecting",
+        )
+        .into());
+    }
     let store = app_context::<Arc<Store>>(cx);
     render_file(store, user, &q.id, q.render)
         .await
@@ -410,6 +676,19 @@ async fn callback(cx: &Cx) -> Result<Response> {
     {
         return Err(bad_request("OAuth session mismatch").into());
     }
+    let _guard = yt.account_lock(&f.user).lock_owned().await;
+    if yt
+        .inner
+        .connection_generation
+        .lock()
+        .unwrap()
+        .get(&f.user)
+        .copied()
+        != Some(f.generation)
+        || yt.revocation_pending(&f.user)?
+    {
+        return Err(bad_request("OAuth request was superseded; connect again").into());
+    }
     let back = format!("/youtube?id={}&render={}", f.project, f.render);
     if q.error.is_some() {
         return redirect(&format!("{back}&error=denied"));
@@ -422,7 +701,8 @@ async fn callback(cx: &Cx) -> Result<Response> {
     let resp = yt
         .inner
         .client
-        .post("https://oauth2.googleapis.com/token")
+        .post(yt.endpoint("/token", "https://oauth2.googleapis.com/token"))
+        .timeout(Duration::from_secs(30))
         .form(&[
             ("code", code.as_str()),
             ("client_id", c.client_id.as_str()),
@@ -441,71 +721,81 @@ async fn callback(cx: &Cx) -> Result<Response> {
         .json()
         .await
         .map_err(|_| bad_request("Invalid Google response"))?;
-    let access = token["access_token"]
-        .as_str()
-        .ok_or_else(|| bad_request("Missing access token"))?;
     let refresh = token["refresh_token"]
         .as_str()
         .ok_or_else(|| bad_request("Google did not provide a refresh token; reconnect"))?;
-    let response = yt
-        .inner
-        .client
-        .get("https://www.googleapis.com/youtube/v3/channels")
-        .query(&[("part", "snippet"), ("mine", "true")])
-        .bearer_auth(access)
-        .send()
-        .await
-        .map_err(|_| bad_request("Unable to identify the YouTube channel"))?;
-    if !response.status().is_success() {
-        return Err(bad_request("Unable to identify the YouTube channel").into());
-    }
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|_| bad_request("Invalid channel response"))?;
-    let items = data["items"]
-        .as_array()
-        .ok_or_else(|| bad_request("No YouTube channel found"))?;
-    if items.len() != 1 {
-        return Err(bad_request("Select a single YouTube channel when connecting").into());
-    }
-    let id = items[0]["id"]
-        .as_str()
-        .ok_or_else(|| bad_request("Channel ID missing"))?;
-    let title = items[0]["snippet"]["title"]
-        .as_str()
-        .ok_or_else(|| bad_request("Channel title missing"))?;
     let encrypted = yt.seal(&f.user, refresh)?;
-    let active = yt.inner.active.lock().unwrap();
-    if active.contains_key(&f.user) {
-        return Err(
-            bad_request("Wait for the upload to finish before changing the connection").into(),
-        );
+    let result: Result<Response> = async {
+        let access = token["access_token"]
+            .as_str()
+            .ok_or_else(|| bad_request("Missing access token"))?;
+        let response = yt
+            .inner
+            .client
+            .get(yt.endpoint(
+                "/channels",
+                "https://www.googleapis.com/youtube/v3/channels",
+            ))
+            .timeout(Duration::from_secs(30))
+            .query(&[("part", "snippet"), ("mine", "true")])
+            .bearer_auth(access)
+            .send()
+            .await
+            .map_err(|_| bad_request("Unable to identify the YouTube channel"))?;
+        if !response.status().is_success() {
+            return Err(bad_request("Unable to identify the YouTube channel").into());
+        }
+        let data: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| bad_request("Invalid channel response"))?;
+        let items = data["items"]
+            .as_array()
+            .ok_or_else(|| bad_request("No YouTube channel found"))?;
+        if items.len() != 1 {
+            return Err(bad_request("Select a single YouTube channel when connecting").into());
+        }
+        let id = items[0]["id"]
+            .as_str()
+            .ok_or_else(|| bad_request("Channel ID missing"))?;
+        let title = items[0]["snippet"]["title"]
+            .as_str()
+            .ok_or_else(|| bad_request("Channel title missing"))?;
+        let active = yt.inner.active.lock().unwrap();
+        if active.contains_key(&f.user) {
+            return Err(bad_request(
+                "Wait for the upload to finish before changing the connection",
+            )
+            .into());
+        }
+        let generations = yt.inner.connection_generation.lock().unwrap();
+        if generations.get(&f.user).copied() != Some(f.generation) {
+            return Err(bad_request("OAuth request was superseded; connect again").into());
+        }
+        if !yt.save_connection(&f.user, &f.session, &encrypted, id, title)? {
+            return Err(bad_request("OAuth session expired; connect again").into());
+        }
+        redirect(&back)
     }
-    let generations = yt.inner.connection_generation.lock().unwrap();
-    if generations.get(&f.user).copied() != Some(f.generation) {
-        return Err(bad_request("OAuth request was superseded; connect again").into());
+    .await;
+    if result.is_err() {
+        // Never silently discard a refresh token issued for a failed callback.
+        // This account's lifecycle lock prevents a new grant racing its revoke.
+        yt.queue_unused_token(&f.user, &encrypted)?;
+        yt.revoke_pending_locked(&f.user).await?;
     }
-    if !yt.save_connection(&f.user, &f.session, &encrypted, id, title)? {
-        return Err(bad_request("OAuth session expired; connect again").into());
-    }
-    redirect(&back)
+    result
 }
 #[route(POST "/youtube/disconnect")]
 async fn disconnect(cx: &Cx) -> Result<Response> {
     let yt = app_context::<YouTube>(cx);
     let user = auth::username(cx);
-    let active = yt.inner.active.lock().unwrap();
-    if active.contains_key(user) {
-        return Err(bad_request("Wait for the upload to finish before disconnecting").into());
-    }
-    let mut generations = yt.inner.connection_generation.lock().unwrap();
-    let generation = generations.entry(user.to_owned()).or_default();
-    *generation = generation.wrapping_add(1);
-    yt.db()?
-        .execute("DELETE FROM youtube_connections WHERE username=?1", [user])
-        .map_err(ioerr)?;
-    redirect("/")
+    let confirmed = yt.disconnect_user(user).await?;
+    redirect(if confirmed {
+        "/youtube/settings?disconnected=revoked"
+    } else {
+        "/youtube/settings?disconnected=pending"
+    })
 }
 
 #[derive(Deserialize)]
@@ -531,33 +821,55 @@ struct UploadStatus {
 fn upload_status(yt: &YouTube, user: &str, id: &str) -> io::Result<UploadStatus> {
     yt.db()?.query_row("SELECT id,state,sent,total,video_id,error,actual_privacy FROM youtube_uploads WHERE id=?1 AND username=?2",params![id,user],|r|Ok(UploadStatus{id:r.get(0)?,state:r.get(1)?,sent:r.get(2)?,total:r.get(3)?,video_id:r.get(4)?,error:r.get(5)?,actual_privacy:r.get(6)?})).map_err(ioerr)
 }
-fn launch(yt: YouTube, store: Arc<Store>, user: String, id: String) -> io::Result<()> {
-    {
-        let mut active = yt.inner.active.lock().unwrap();
-        if active.contains_key(&user) {
-            return Err(ioerr("An upload is already in progress"));
-        }
-        active.insert(user.clone(), id.clone());
+fn launch(yt: &YouTube, store: Arc<Store>, user: String, id: String) -> io::Result<()> {
+    let mut active = yt.inner.active.lock().unwrap();
+    spawn_upload_locked(yt, store, user, id, &mut active)
+}
+
+fn spawn_upload_locked(
+    yt: &YouTube,
+    store: Arc<Store>,
+    user: String,
+    id: String,
+    active: &mut HashMap<String, ActiveUpload>,
+) -> io::Result<()> {
+    if active.contains_key(&user) {
+        return Err(ioerr("An upload is already in progress"));
     }
-    if let Err(e) = yt.db().and_then(|db| {
-        db.execute(
-            "UPDATE youtube_uploads SET state='queued',error=NULL WHERE id=?1 AND username=?2",
-            params![id, user],
-        )
-        .map_err(ioerr)
-    }) {
-        yt.inner.active.lock().unwrap().remove(&user);
-        return Err(e);
+    if yt.connection(&user)?.is_none() || yt.revocation_pending(&user)? {
+        return Err(ioerr("Connect YouTube first"));
     }
-    tokio::spawn(async move {
-        if let Err(e) = run_upload(&yt, &store, &user, &id).await {
+    let updated = yt.db()?.execute(
+        "UPDATE youtube_uploads SET state='queued',error=NULL WHERE id=?1 AND username=?2 AND state IN ('queued','uploading','interrupted')",
+        params![id, user],
+    ).map_err(ioerr)?;
+    if updated != 1 {
+        return Err(ioerr("Upload cannot be resumed"));
+    }
+    let registration = UploadRegistration {
+        youtube: yt.clone(),
+        user: user.clone(),
+        id: id.clone(),
+    };
+    let yt = yt.clone();
+    let run_user = user.clone();
+    let run_id = id.clone();
+    let task = tokio::spawn(async move {
+        let _registration = registration;
+        if let Err(e) = run_upload(&yt, &store, &run_user, &run_id).await {
             tracing::warn!("YouTube upload stopped: {}", e);
             if let Ok(db) = yt.db() {
-                let _=db.execute("UPDATE youtube_uploads SET state='interrupted',error=?1 WHERE id=?2 AND username=?3 AND state!='complete'",params![e.to_string(),id,user]);
+                let _=db.execute("UPDATE youtube_uploads SET state='interrupted',error=?1 WHERE id=?2 AND username=?3 AND state!='complete'",params![e.to_string(),run_id,run_user]);
             }
         }
-        yt.inner.active.lock().unwrap().remove(&user);
     });
+    active.insert(
+        user,
+        ActiveUpload {
+            id,
+            task: task.abort_handle(),
+        },
+    );
     Ok(())
 }
 #[route(POST "/youtube/upload")]
@@ -580,15 +892,19 @@ async fn start_upload(cx: &Cx, Json(q): Json<UploadRequest>) -> Result<Json<Uplo
     let (_, path) = render_file(store, user, &q.id, q.render)
         .await
         .map_err(|_| bad_request("Render not found"))?;
-    let (_, channel, _) = yt
-        .connection(user)?
-        .ok_or_else(|| bad_request("Connect YouTube first"))?;
     let total = tokio::fs::metadata(path).await?.len();
     if total == 0 || total > 256_000_000_000 {
         return Err(bad_request("Invalid video size").into());
     }
-    if yt.inner.active.lock().unwrap().contains_key(user) {
+    let mut active = yt.inner.active.lock().unwrap();
+    if active.contains_key(user) {
         return Err(bad_request("An upload is already in progress").into());
+    }
+    let (_, channel, _) = yt
+        .connection(user)?
+        .ok_or_else(|| bad_request("Connect YouTube first"))?;
+    if yt.revocation_pending(user)? {
+        return Err(bad_request("YouTube revocation is pending").into());
     }
     let pending: bool = yt.db()?.query_row("SELECT EXISTS(SELECT 1 FROM youtube_uploads WHERE username=?1 AND project_id=?2 AND render=?3 AND state IN ('queued','uploading','interrupted'))", params![user,q.id,q.render as i64], |r|r.get(0)).map_err(ioerr)?;
     if pending {
@@ -596,7 +912,7 @@ async fn start_upload(cx: &Cx, Json(q): Json<UploadRequest>) -> Result<Json<Uplo
     }
     let id = random();
     yt.db()?.execute("INSERT INTO youtube_uploads(id,username,project_id,render,title,description,privacy,made_for_kids,state,total,channel_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'queued',?9,?10)",params![id,user,q.id,q.render as i64,q.title,q.description,q.privacy,q.made_for_kids,total as i64,channel]).map_err(ioerr)?;
-    if launch(yt.clone(), store.clone(), user.to_owned(), id.clone()).is_err() {
+    if spawn_upload_locked(yt, store.clone(), user.to_owned(), id.clone(), &mut active).is_err() {
         yt.db()?
             .execute(
                 "DELETE FROM youtube_uploads WHERE id=?1 AND username=?2",
@@ -618,7 +934,13 @@ async fn youtube_status(cx: &Cx) -> Result<Json<UploadStatus>> {
     let mut status = upload_status(yt, auth::username(cx), &q.id)
         .map_err(|_| bad_request("Upload not found"))?;
     if (status.state == "uploading" || status.state == "queued")
-        && yt.inner.active.lock().unwrap().get(auth::username(cx)) != Some(&q.id)
+        && !yt
+            .inner
+            .active
+            .lock()
+            .unwrap()
+            .get(auth::username(cx))
+            .is_some_and(|upload| upload.id == q.id)
     {
         status.state = "interrupted".into();
     }
@@ -636,8 +958,8 @@ async fn resume(cx: &Cx, Json(q): Json<StatusQuery>) -> Result<Json<UploadStatus
         return Err(bad_request("Upload was abandoned").into());
     }
     let store = app_context::<Arc<Store>>(cx);
-    launch(yt.clone(), store.clone(), user.to_owned(), q.id.clone())
-        .map_err(|_| bad_request("An upload is already in progress"))?;
+    launch(yt, store.clone(), user.to_owned(), q.id.clone())
+        .map_err(|_| bad_request("Upload cannot start; check the connection and active uploads"))?;
     Ok(Json(upload_status(yt, user, &q.id)?))
 }
 #[route(POST "/youtube/abandon")]
@@ -645,7 +967,7 @@ async fn abandon(cx: &Cx, Json(q): Json<StatusQuery>) -> Result<Json<UploadStatu
     let yt = app_context::<YouTube>(cx);
     let user = auth::username(cx);
     let active = yt.inner.active.lock().unwrap();
-    if active.get(user) == Some(&q.id) {
+    if active.get(user).is_some_and(|upload| upload.id == q.id) {
         return Err(bad_request("Upload is still in progress").into());
     }
     let changed = yt.db()?.execute("UPDATE youtube_uploads SET state='abandoned',session=NULL WHERE id=?1 AND username=?2 AND state IN ('queued','uploading','interrupted')", params![q.id,user]).map_err(ioerr)?;
@@ -663,9 +985,35 @@ fn valid_session_url(value: &str) -> bool {
             && u.password().is_none()
     })
 }
+struct StoredUpload {
+    project_id: String,
+    render: i64,
+    title: String,
+    description: String,
+    privacy: String,
+    made_for_kids: bool,
+    session: Option<Vec<u8>>,
+    total: i64,
+    channel_id: String,
+}
+
 async fn run_upload(yt: &YouTube, store: &Store, user: &str, id: &str) -> io::Result<()> {
-    let row:(String,i64,String,String,String,bool,Option<Vec<u8>>,i64,String)=yt.db()?.query_row("SELECT project_id,render,title,description,privacy,made_for_kids,session,total,channel_id FROM youtube_uploads WHERE id=?1 AND username=?2",params![id,user],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).map_err(ioerr)?;
-    let (_, path) = render_file(store, user, &row.0, row.1 as u64).await?;
+    let upload = yt.db()?.query_row(
+        "SELECT project_id,render,title,description,privacy,made_for_kids,session,total,channel_id FROM youtube_uploads WHERE id=?1 AND username=?2",
+        params![id, user],
+        |r| Ok(StoredUpload {
+            project_id: r.get(0)?,
+            render: r.get(1)?,
+            title: r.get(2)?,
+            description: r.get(3)?,
+            privacy: r.get(4)?,
+            made_for_kids: r.get(5)?,
+            session: r.get(6)?,
+            total: r.get(7)?,
+            channel_id: r.get(8)?,
+        }),
+    ).map_err(ioerr)?;
+    let (_, path) = render_file(store, user, &upload.project_id, upload.render as u64).await?;
     let content_type = match path
         .extension()
         .and_then(|s| s.to_str())
@@ -679,13 +1027,13 @@ async fn run_upload(yt: &YouTube, store: &Store, user: &str, id: &str) -> io::Re
     };
     let mut file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
-    if total != row.7 as u64 {
+    if total != upload.total as u64 {
         return Err(ioerr("Render file changed; upload cannot be resumed"));
     }
     let (_, current_channel, _) = yt
         .connection(user)?
         .ok_or_else(|| ioerr("Connect YouTube first"))?;
-    if current_channel != row.8 {
+    if current_channel != upload.channel_id {
         return Err(ioerr(
             "The connected channel changed; reconnect the original channel to resume",
         ));
@@ -697,10 +1045,10 @@ async fn run_upload(yt: &YouTube, store: &Store, user: &str, id: &str) -> io::Re
             params![id, user],
         )
         .map_err(ioerr)?;
-    let session = if let Some(saved) = row.6 {
+    let session = if let Some(saved) = upload.session {
         yt.open(user, &saved)?
     } else {
-        let metadata = serde_json::json!({"snippet":{"title":row.2,"description":row.3},"status":{"privacyStatus":row.4,"selfDeclaredMadeForKids":row.5}});
+        let metadata = serde_json::json!({"snippet":{"title":upload.title,"description":upload.description},"status":{"privacyStatus":upload.privacy,"selfDeclaredMadeForKids":upload.made_for_kids}});
         let response=yt.inner.client.post(yt.endpoint("/videos", "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet%2Cstatus")).bearer_auth(&access).header("X-Upload-Content-Length",total).header("X-Upload-Content-Type",content_type).json(&metadata).send().await.map_err(|_|ioerr("Could not start YouTube upload"))?;
         if !response.status().is_success() {
             return Err(ioerr(format!(
@@ -869,7 +1217,13 @@ async fn history(cx: &Cx) -> Result<Json<Vec<UploadStatus>>> {
     let yt = app_context::<YouTube>(cx);
     let db = yt.db()?;
     let mut stmt=db.prepare("SELECT id,state,sent,total,video_id,error,actual_privacy FROM youtube_uploads WHERE username=?1 AND project_id=?2 AND render=?3 ORDER BY rowid DESC").map_err(ioerr)?;
-    let active = yt.inner.active.lock().unwrap().get(user).cloned();
+    let active = yt
+        .inner
+        .active
+        .lock()
+        .unwrap()
+        .get(user)
+        .map(|upload| upload.id.clone());
     let results = stmt
         .query_map(params![user, q.id, q.render as i64], |r| {
             let mut state: String = r.get(1)?;
@@ -1005,7 +1359,7 @@ mod tests {
         yt.db()
             .unwrap()
             .execute(
-                "INSERT INTO youtube_connections VALUES (?1,?2,?3,?4)",
+                "INSERT INTO youtube_connections(username,token,channel_id,channel_title,last_verified_at) VALUES (?1,?2,?3,?4,unixepoch())",
                 params!["alice", token, "channel", "Channel"],
             )
             .unwrap();

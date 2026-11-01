@@ -1,5 +1,34 @@
-/target
-
+# Build output and local application data.
+/target/
 /projects/
+/examples/media/
+__pycache__/
+*.py[cod]
 
+# Deployment configuration (keep only the checked-in examples).
 config.toml
+config.*.toml
+!config.example.toml
+!docker/config.toml
+*.local.toml
+flicksy-container.toml
+
+# Credentials: keep real secrets outside the checkout whenever possible.
+.env
+.env.*
+secrets/
+*_api_key
+*_client_secret
+*_encryption_key
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Databases, including SQLite journals outside projects/.
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*

@@ -1,6 +1,11 @@
 # Mount persistent storage at this path and make it writable by UID 10001.
 projects_dir = "/var/lib/flicksy/projects"
 
+# Public contact shown on the privacy policy and terms pages.
+# Replace this placeholder before sharing your installation; restart to apply.
+[operator]
+contact_email = "operator@example.com"
+
 # Database defaults to the persistent project directory.
 [auth]
 # Enable when the application is accessed via HTTPS.
@@ -23,8 +28,8 @@ level = "info"
 
 [llm]
 # Override this configuration for your inference endpoint and credentials.
-base_url = "http://rust-arch:6284/v1"
-model = "openai/gpt-6.1-terra"
+base_url = "https://llm.example.com/v1"
+model = "YOUR_TOOL_CALLING_MODEL"
 # api_key_env = "FLICKSY_API_KEY"
 # api_key_file = "/run/secrets/flicksy_api_key"
 request_timeout_seconds = 120

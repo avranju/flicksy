@@ -102,8 +102,15 @@ impl Accounts {
         Ok(names)
     }
     pub fn remove(&self, username: &str) -> io::Result<()> {
-        if self
-            .connect()?
+        let mut connection = self.connect()?;
+        connection
+            .pragma_update(None, "secure_delete", "ON")
+            .map_err(db_error)?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        crate::youtube::queue_account_revocation(&transaction, username)?;
+        if transaction
             .execute("DELETE FROM users WHERE username = ?1", [username])
             .map_err(db_error)?
             == 0
@@ -113,7 +120,7 @@ impl Accounts {
                 "User does not exist",
             ));
         }
-        Ok(())
+        transaction.commit().map_err(db_error)
     }
     pub fn login(&self, username: &str, password: &str) -> io::Result<Option<String>> {
         if !valid(username, password) {

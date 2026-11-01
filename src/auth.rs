@@ -11,25 +11,56 @@ async fn login(cx: &Cx) -> Result<impl View> {
         <main class="mx-auto w-full max-w-[520px] px-6 pt-12 pb-16 sm:pt-20">
             <section aria-labelledby="login-title">
                 <p class="text-xs font-bold text-accent-ink">"WELCOME TO FLICKSY"</p>
-                <h1 id="login-title" class="mt-4 text-[30px] leading-[1.2] font-bold sm:text-[34px]">
+                <h1
+                    id="login-title"
+                    class="mt-4 text-[30px] leading-[1.2] font-bold sm:text-[34px]"
+                >
                     "Welcome back"
                 </h1>
                 <p class="mt-4 text-base text-muted-foreground">
                     "Sign in to create videos and access your projects."
                 </p>
-                <form method="post" action="/login" class="mt-8 flex flex-col gap-6 rounded-[20px] bg-card px-5 py-9 sm:px-10">
+                <form
+                    method="post"
+                    action="/login"
+                    class="mt-8 flex flex-col gap-6 rounded-[20px] bg-card px-5 py-9 sm:px-10"
+                >
                     <div class="flex flex-col gap-2">
-                        <label for="username" class="text-sm font-semibold">"Username"</label>
-                        <input id="username" name="username" type="text" autofocus="autofocus" autocomplete="username" required="required" class="w-full rounded-xl border border-border bg-surface px-4 py-3 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]">
+                        <label for="username" class="text-sm font-semibold">
+                            "Username"
+                        </label>
+                        <input
+                            id="username"
+                            name="username"
+                            type="text"
+                            autofocus="autofocus"
+                            autocomplete="username"
+                            required="required"
+                            class="w-full rounded-xl border border-border bg-surface px-4 py-3 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]"
+                        >
                     </div>
                     <div class="flex flex-col gap-2">
-                        <label for="password" class="text-sm font-semibold">"Password"</label>
-                        <input id="password" name="password" type="password" autocomplete="current-password" required="required" class="w-full rounded-xl border border-border bg-surface px-4 py-3 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]">
+                        <label for="password" class="text-sm font-semibold">
+                            "Password"
+                        </label>
+                        <input
+                            id="password"
+                            name="password"
+                            type="password"
+                            autocomplete="current-password"
+                            required="required"
+                            class="w-full rounded-xl border border-border bg-surface px-4 py-3 text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8]"
+                        >
                     </div>
                     if failed {
-                        <p role="alert" class="text-sm text-danger-ink">"Unable to sign in. Check your credentials and try again."</p>
+                        <p role="alert" class="text-sm text-danger-ink">
+                            "Unable to sign in. Check your credentials and try again."
+                        </p>
                     }
-                    <button type="submit" class="cursor-pointer rounded-xl bg-[#6554e8] px-4 py-3 text-sm font-bold text-white transition motion-reduce:transition-none hover:bg-[#5544d4] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100">
+                    <button
+                        type="submit"
+                        class="cursor-pointer rounded-xl bg-[#6554e8] px-4 py-3 text-sm font-bold text-white transition motion-reduce:transition-none hover:bg-[#5544d4] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6554e8] active:scale-[0.98] motion-reduce:active:scale-100"
+                    >
                         "Sign in"
                     </button>
                 </form>
